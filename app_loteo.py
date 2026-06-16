@@ -1,5 +1,5 @@
 """
-NV2 Loteo Tintorería — Grupo Elcatex
+Planeacion de la Demanda — Grupo Elcatex
 Solo requiere la hoja DATA del Excel.
 """
 
