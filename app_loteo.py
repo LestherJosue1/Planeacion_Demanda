@@ -792,61 +792,6 @@ with st.sidebar:
     uploaded=st.file_uploader("Sube tu .xlsx (hoja DATA)", type=["xlsx","xlsm"])
     st.markdown("---")
 
-    # ==== CAPACIDADES ====
-    st.markdown("### 🏭 Capacidades Tintorería")
-    st.caption("Activa/desactiva categorías y ajusta max anchos por lote.")
-
-    if "cap_rows" not in st.session_state:
-        st.session_state["cap_rows"]=[
-            {"label":l,"mix":m,"minimo":mn,"maximo":mx,"capacidad":cap,"activa":act,
-             "max_widths":CAP_MAX_WIDTHS_DEFAULT.get(l,6)}
-            for l,m,mn,mx,cap,act in CAP_DEFAULTS
-        ]
-
-    cap_rows=st.session_state["cap_rows"]
-    mixes_uniq=sorted({r["mix"] for r in cap_rows})
-    mix_tab=st.radio("MIX",mixes_uniq,horizontal=True)
-
-    edited_rows=[]
-    for row in cap_rows:
-        if row["mix"]!=mix_tab:
-            edited_rows.append(row); continue
-        with st.container():
-            c1,c2,c3=st.columns([1.2,1,1])
-            with c1:
-                activa=st.checkbox(row["label"],value=row["activa"],key=f"act_{row['label']}_{row['mix']}")
-            with c2:
-                cap_v=st.number_input("Cap.",value=float(row["capacidad"]),step=1000.0,
-                                      key=f"cap_{row['label']}_{row['mix']}",
-                                      label_visibility="collapsed" if True else "visible",
-                                      disabled=not activa)
-            with c3:
-                mw_v=st.number_input("MaxW",value=int(row["max_widths"]),step=1,min_value=1,max_value=10,
-                                     key=f"mw_{row['label']}_{row['mix']}",
-                                     label_visibility="collapsed",
-                                     disabled=not activa)
-            edited_rows.append({**row,"activa":activa,"capacidad":cap_v,"max_widths":int(mw_v)})
-
-    st.session_state["cap_rows"]=edited_rows
-    st.caption("Col 2 = Capacidad · Col 3 = Max Anchos")
-
-    st.markdown("---")
-    # ==== COMBINACIONES ====
-    st.markdown("### 🔀 Combinaciones de Prioridad")
-    st.caption("Activa qué bloques pueden mezclarse en un mismo lote.")
-
-    BLOQUES=["VENCIDOS","AHEAD","AHEAD2","OTROS"]
-    if "comb_rows" not in st.session_state:
-        st.session_state["comb_rows"]=list(COMB_DEFAULTS)
-
-    comb_rows_edited=[]
-    for b1,b2,act in st.session_state["comb_rows"]:
-        label=f"{b1} + {b2}" if b1!=b2 else f"{b1} solo"
-        chk=st.checkbox(label,value=act,key=f"comb_{b1}_{b2}")
-        comb_rows_edited.append((b1,b2,chk))
-    st.session_state["comb_rows"]=comb_rows_edited
-
-    st.markdown("---")
     # ==== PARAMS ====
     st.markdown("### ⚙️ Parámetros")
     min_diff   =st.number_input("Diff. mín. entre anchos",value=0.0, step=0.5)
@@ -856,40 +801,84 @@ with st.sidebar:
     beam_width =st.slider("Beam Width",1,10,3)
     venc_first =st.checkbox("Priorizar VENCIDOS solos primero",value=True)
 
-# ---------- MAIN AREA: CONFIG VIEWER ----------
-st.markdown('<p class="section-title">📋 Configuración activa</p>', unsafe_allow_html=True)
+# ---------- MAIN AREA: CONFIG TABLES ----------
+st.markdown('<p class="section-title">📋 Configuración — edita directamente en las tablas</p>',
+            unsafe_allow_html=True)
 
-col_cap, col_comb = st.columns([3,2])
+# ==== CAPACIDADES como data_editor ====
+st.markdown("#### 🏭 Capacidades Tintorería")
+st.caption("Marca **Activa** para incluir la categoría en el loteo. Edita capacidad y max anchos directamente en la tabla.")
 
-with col_cap:
-    st.markdown("**Categorías de Tintorería**")
-    cap_display=[]
-    for row in st.session_state["cap_rows"]:
-        cap_display.append({
-            "Categoría":row["label"],
-            "MIX":row["mix"],
-            "Mín":f"{row['minimo']:,}",
-            "Máx":f"{row['maximo']:,}",
-            "Capacidad":f"{row['capacidad']:,.0f}",
-            "Max Anchos":row["max_widths"],
-            "Activa":"✅" if row["activa"] else "❌",
-        })
-    df_cfg_display=pd.DataFrame(cap_display)
-    def color_activa(val):
-        return "background-color:#d4edda;color:#155724" if val=="✅" else "background-color:#f8d7da;color:#721c24"
-    st.dataframe(df_cfg_display.style.map(color_activa,subset=["Activa"]),
-                 use_container_width=True, height=300)
+if "cap_df" not in st.session_state:
+    st.session_state["cap_df"] = pd.DataFrame([
+        {
+            "Activa":       act,
+            "Categoría":    l,
+            "MIX":          m,
+            "Mín (lbs)":    mn,
+            "Máx (lbs)":    mx,
+            "Capacidad":    int(cap),
+            "Max Anchos":   CAP_MAX_WIDTHS_DEFAULT.get(l, 6),
+        }
+        for l,m,mn,mx,cap,act in CAP_DEFAULTS
+    ])
 
-with col_comb:
-    st.markdown("**Combinaciones de Prioridad**")
-    comb_display=[{"Combinación":f"{b1} + {b2}" if b1!=b2 else f"Solo {b1}",
-                   "Estado":"✅ Activa" if a else "❌ Inactiva"}
-                  for b1,b2,a in st.session_state["comb_rows"]]
-    df_comb_display=pd.DataFrame(comb_display)
-    def color_estado(val):
-        return "background-color:#d4edda" if "✅" in val else "background-color:#f8d7da"
-    st.dataframe(df_comb_display.style.map(color_estado,subset=["Estado"]),
-                 use_container_width=True, height=300)
+cap_edited = st.data_editor(
+    st.session_state["cap_df"],
+    use_container_width=True,
+    height=420,
+    hide_index=True,
+    column_config={
+        "Activa":      st.column_config.CheckboxColumn("✅ Activa",
+                           help="Marca para incluir esta categoría en el loteo"),
+        "Categoría":   st.column_config.TextColumn("Categoría", disabled=True),
+        "MIX":         st.column_config.TextColumn("MIX", disabled=True),
+        "Mín (lbs)":   st.column_config.NumberColumn("Mín (lbs)", disabled=True, format="%d"),
+        "Máx (lbs)":   st.column_config.NumberColumn("Máx (lbs)", disabled=True, format="%d"),
+        "Capacidad":   st.column_config.NumberColumn(
+                           "Capacidad (lbs)",
+                           help="Cuántas lbs en total puede recibir esta categoría en el plan",
+                           min_value=0, step=1000, format="%d"),
+        "Max Anchos":  st.column_config.NumberColumn(
+                           "Max Anchos por Lote",
+                           help="Número máximo de anchos distintos permitidos en un mismo lote de esta categoría",
+                           min_value=1, max_value=10, step=1),
+    },
+    key="cap_editor",
+)
+st.session_state["cap_df"] = cap_edited
+
+st.markdown("---")
+
+# ==== COMBINACIONES como data_editor ====
+st.markdown("#### 🔀 Combinaciones de Prioridad")
+st.caption("Marca **Permitida** para que esos dos bloques de prioridad puedan ir en el mismo lote.")
+
+if "comb_df" not in st.session_state:
+    st.session_state["comb_df"] = pd.DataFrame([
+        {
+            "Permitida":    act,
+            "Bloque 1":     b1,
+            "Bloque 2":     b2,
+            "Descripción":  f"Solo {b1}" if b1==b2 else f"{b1} y {b2} pueden mezclarse en un lote",
+        }
+        for b1,b2,act in COMB_DEFAULTS
+    ])
+
+comb_edited = st.data_editor(
+    st.session_state["comb_df"],
+    use_container_width=True,
+    height=265,
+    hide_index=True,
+    column_config={
+        "Permitida":    st.column_config.CheckboxColumn("✅ Permitida"),
+        "Bloque 1":     st.column_config.TextColumn("Bloque 1",   disabled=True),
+        "Bloque 2":     st.column_config.TextColumn("Bloque 2",   disabled=True),
+        "Descripción":  st.column_config.TextColumn("Descripción",disabled=True),
+    },
+    key="comb_editor",
+)
+st.session_state["comb_df"] = comb_edited
 
 st.markdown("---")
 
@@ -909,29 +898,37 @@ if st.button("🚀 Ejecutar Loteo", type="primary", use_container_width=True):
             df_data,hdr_row=load_data(io.BytesIO(file_bytes))
         st.success(f"✅ {len(df_data):,} filas cargadas (header fila {hdr_row+1})")
 
-        # Construir df_cap desde session_state
-        active_rows=[r for r in st.session_state["cap_rows"] if r["activa"]]
-        if not active_rows:
+        # Construir df_cap desde data_editor
+        cap_df = st.session_state["cap_df"]
+        active_df = cap_df[cap_df["Activa"]==True]
+        if len(active_df)==0:
             st.error("❌ Debes tener al menos una categoría activa."); st.stop()
 
         df_cap=pd.DataFrame([{
-            "CATEGORIA": r["label"],
-            "LABEL":     r["label"],
-            "MIX":       r["mix"].upper(),
-            "MINIMO":    float(r["minimo"]),
-            "MAXIMO":    float(r["maximo"]),
-            "CAPACIDAD": float(r["capacidad"]),
-            "MAX_WIDTHS_CAT": int(r["max_widths"]),
-        } for r in active_rows])
+            "CATEGORIA":     str(row["Categoría"]),
+            "LABEL":         str(row["Categoría"]),
+            "MIX":           str(row["MIX"]).upper(),
+            "MINIMO":        float(row["Mín (lbs)"]),
+            "MAXIMO":        float(row["Máx (lbs)"]),
+            "CAPACIDAD":     float(row["Capacidad"]),
+            "MAX_WIDTHS_CAT":int(row["Max Anchos"]),
+        } for _,row in active_df.iterrows()])
+
+        # Construir combinaciones desde data_editor
+        comb_df = st.session_state["comb_df"]
+        combinaciones = [
+            (str(row["Bloque 1"]), str(row["Bloque 2"]), bool(row["Permitida"]))
+            for _,row in comb_df.iterrows()
+        ]
 
         ui_params={
-            "min_diff":      min_diff,
-            "max_diff":      max_diff,
-            "max_widths_global": max([r["max_widths"] for r in active_rows]),
-            "max_sku":       int(max_sku),
-            "split_min":     split_min,
-            "beam_width":    beam_width,
-            "combinaciones": st.session_state["comb_rows"],
+            "min_diff":          min_diff,
+            "max_diff":          max_diff,
+            "max_widths_global": int(active_df["Max Anchos"].max()),
+            "max_sku":           int(max_sku),
+            "split_min":         split_min,
+            "beam_width":        beam_width,
+            "combinaciones":     combinaciones,
         }
         params=build_params(ui_params)
         params["VENCIDOS_FIRST"]=venc_first
