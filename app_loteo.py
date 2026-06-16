@@ -23,7 +23,7 @@ LIGHT_BG   = "#F0F4FF"   # fondo suave azulado
 # PAGE CONFIG + CSS
 # ============================================================
 st.set_page_config(
-    page_title="Loteo Tintorería — Elcatex",
+    page_title="Planeación de la Demanda — Elcatex",
     page_icon="🧵",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -34,17 +34,50 @@ st.markdown(f"""
   /* ---- Fondo general ---- */
   .stApp {{ background-color: {LIGHT_BG}; }}
 
-  /* ---- Sidebar ---- */
+  /* ---- Sidebar fondo ---- */
   [data-testid="stSidebar"] {{
       background: linear-gradient(180deg, {BLUE_DARK} 0%, {BLUE_MID} 100%);
   }}
-  [data-testid="stSidebar"] * {{ color: {WHITE} !important; }}
-  [data-testid="stSidebar"] .stSelectbox label,
-  [data-testid="stSidebar"] .stNumberInput label,
-  [data-testid="stSidebar"] .stTextInput label,
-  [data-testid="stSidebar"] .stCheckbox label,
-  [data-testid="stSidebar"] .stSlider label {{ color: {WHITE} !important; }}
+
+  /* Etiquetas, headings y texto libre en sidebar → blanco */
+  [data-testid="stSidebar"] label {{ color: {WHITE} !important; }}
+  [data-testid="stSidebar"] p     {{ color: {WHITE} !important; }}
+  [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2,
+  [data-testid="stSidebar"] h3   {{ color: {WHITE} !important; }}
+  [data-testid="stSidebar"] .stMarkdown {{ color: {WHITE} !important; }}
+  [data-testid="stSidebar"] [data-testid="stSliderTickBarMin"],
+  [data-testid="stSidebar"] [data-testid="stSliderTickBarMax"] {{ color: rgba(255,255,255,0.7) !important; }}
   [data-testid="stSidebar"] hr {{ border-color: rgba(255,255,255,0.25); }}
+
+  /* Inputs numéricos/texto → fondo blanco con texto oscuro (legible) */
+  [data-testid="stSidebar"] input[type="number"],
+  [data-testid="stSidebar"] input[type="text"] {{
+      background-color: {WHITE} !important;
+      color: {BLUE_DARK} !important;
+      -webkit-text-fill-color: {BLUE_DARK} !important;
+      border-radius: 6px !important;
+  }}
+
+  /* File uploader → borde punteado blanco, texto blanco, botón semitransparente */
+  [data-testid="stSidebar"] [data-testid="stFileUploader"] {{
+      background-color: rgba(255,255,255,0.12) !important;
+      border: 2px dashed rgba(255,255,255,0.55) !important;
+      border-radius: 10px !important;
+      padding: 8px !important;
+  }}
+  [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] * {{
+      color: {WHITE} !important;
+      -webkit-text-fill-color: {WHITE} !important;
+  }}
+  [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button {{
+      background-color: rgba(255,255,255,0.22) !important;
+      border: 1px solid rgba(255,255,255,0.5) !important;
+      color: {WHITE} !important;
+      -webkit-text-fill-color: {WHITE} !important;
+  }}
+  [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] svg {{
+      fill: {WHITE} !important;
+  }}
 
   /* ---- Header banner ---- */
   .elcatex-header {{
@@ -152,7 +185,7 @@ st.markdown(f"""
 <div class="elcatex-header">
   {logo_html}
   <div>
-    <h1>Loteo Tintorería NV2</h1>
+    <h1>Planeación de la Demanda</h1>
     <p>Grupo Elcatex · Planificación 2026 · Lideramos, Cuidamos, Hacemos la Diferencia.</p>
   </div>
 </div>
@@ -794,8 +827,9 @@ with st.sidebar:
 
     # ==== PARAMS ====
     st.markdown("### ⚙️ Parámetros")
-    min_diff   =st.number_input("Diff. mín. entre anchos",value=0.0, step=0.5)
-    max_diff   =st.number_input("Diff. máx. entre anchos",value=6.0, step=0.5)
+    max_diff   =st.number_input("Diff. máx. entre anchos (pulgadas)", value=6.0, step=0.5,
+                                   help="Diferencia máxima permitida entre anchos en un mismo lote")
+    min_diff = 0.0  # siempre 0: sin límite mínimo de diferencia
     max_sku    =st.number_input("Max SKUs por lote",       value=6,   step=1, min_value=1)
     split_min  =st.number_input("Split mínimo LBS",        value=500.0,step=50.0)
     beam_width =st.slider("Beam Width",1,10,3)
