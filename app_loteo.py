@@ -877,7 +877,7 @@ with col_cap:
     df_cfg_display=pd.DataFrame(cap_display)
     def color_activa(val):
         return "background-color:#d4edda;color:#155724" if val=="✅" else "background-color:#f8d7da;color:#721c24"
-    st.dataframe(df_cfg_display.style.applymap(color_activa,subset=["Activa"]),
+    st.dataframe(df_cfg_display.style.map(color_activa,subset=["Activa"]),
                  use_container_width=True, height=300)
 
 with col_comb:
@@ -888,7 +888,7 @@ with col_comb:
     df_comb_display=pd.DataFrame(comb_display)
     def color_estado(val):
         return "background-color:#d4edda" if "✅" in val else "background-color:#f8d7da"
-    st.dataframe(df_comb_display.style.applymap(color_estado,subset=["Estado"]),
+    st.dataframe(df_comb_display.style.map(color_estado,subset=["Estado"]),
                  use_container_width=True, height=300)
 
 st.markdown("---")
