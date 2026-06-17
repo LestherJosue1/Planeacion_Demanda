@@ -91,32 +91,18 @@ DEFAULT_CONFIG = {
     "APPLY_RULES_BLEACH": False,
 }
 
-
-
 DEFAULT_RESTRICCIONES_ANCHO = [
-
-    {"STYLE":"PC54Y",  "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
-
-    {"STYLE":"PC55LS", "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
-
-    {"STYLE":"PC55Y",  "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
-
-    {"STYLE":"PC330Y", "LIMITE_ANCHO":18,"PRIORIDAD_1":2200,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
-
-    {"STYLE":"PC54-2", "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
-
-    {"STYLE":"PC55-2", "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
-
-    {"STYLE":"PC54LS", "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
-
-    {"STYLE":"PC61Y", "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
-
+    {"STYLE":"PC54Y",   "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
+    {"STYLE":"PC55LS",  "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
+    {"STYLE":"PC55Y",   "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
+    {"STYLE":"PC330Y",  "LIMITE_ANCHO":18,"PRIORIDAD_1":2200,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
+    {"STYLE":"PC54-2",  "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
+    {"STYLE":"PC55-2",  "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
+    {"STYLE":"PC54LS",  "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
+    {"STYLE":"PC61Y",   "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
     {"STYLE":"PC54DTG", "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
-
-    {"STYLE":"LPC61", "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
-
-    {"STYLE":"PC55P", "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
-
+    {"STYLE":"LPC61",   "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
+    {"STYLE":"PC55P",   "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
     {"STYLE":"PC61LSP", "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
 ]
 
@@ -333,7 +319,7 @@ def run_loteador(df_cat, cap, max_items, solver_timeout):
     mix_tipo   = str(cap['MIX']).upper()
     tipo_tej   = str(cap['TIPO_TEJIDO']).upper()
     max_anchos = to_int(cap['CTDMAXANCHOS'], 3)
-    max_lotes  = to_int(cap.get('LOTES', 9999))   # ← FIX 1: respetar límite de lotes
+    max_lotes  = round(to_int(cap.get('LOTES', 9999)) * DIAS_SEMANA * to_float(cap.get('SEMANAS', 4)))  # lotes totales del periodo
 
     # Filtros de categoría
     grupo_cat = df_cat[df_cat['MIX'].str.upper() == mix_tipo].copy()
@@ -436,6 +422,7 @@ def _build_reports(result, df_original, capacidades):
         lotes_n  = to_int(c['LOTES'])
         semanas  = to_float(c.get('SEMANAS', 4))
         cap_lbs  = round(lotes_n * DIAS_SEMANA * semanas * maxv, 0)
+        # cap_lbs = lotes/dia * 7 dias * semanas * lbs_maximo_por_lote
         asig     = lbs_x_cat[lbs_x_cat['CATEGORIA']==cat]['LBS_ASIGNADAS'].sum()
         cap_rows.append({'CATEGORIA':cat,'MIX':mix,'MINIMO':minv,'MAXIMO':maxv,
                          'LOTES':lotes_n,'SEMANAS':semanas,'CAPACIDAD_LBS':cap_lbs,
