@@ -199,73 +199,135 @@ def read_excel_data(file_bytes):
     return df_raw, None
 
 # ─── LOTEADOR ───────────────────────────────────────────────────────────────────
-def run_loteador(df, cap, max_items, solver_timeout):
+def _parse_set(x):
+    return set(str(x).split("-"))
+
+def _solver_params(timeout):
+    """OR-Tools SAT parameters tuned for speed on bin-packing problems."""
+    p = cp_model.SatParameters()
+    p.max_time_in_seconds          = float(timeout)
+    p.num_search_workers           = 4      # paralelismo (usa hasta 4 núcleos)
+    p.linearization_level          = 2      # lineariza más agresivamente
+    p.search_branching             = 3      # PORTFOLIO_WITH_QUICK_RESTART
+    p.use_lns_only                 = False
+    p.cp_model_presolve            = True
+    p.clause_cleanup_period        = 10000
+    p.log_search_progress          = False
+    return p
+
+def _prefilter(grupo, min_lbs, max_lbs, max_items):
+    """
+    Elimina filas que NUNCA pueden integrarse a un lote válido:
+      - Un ítem solo: si su LBS > max_lbs, no puede entrar en ningún lote.
+      - Si hay menos de 2 ítems con LBS <= max_lbs, no hay lote posible.
+    Retorna índices válidos.
+    """
+    mask  = grupo['LBS_C'] <= max_lbs
+    valid = list(grupo[mask].index)
+    return valid
+
+def _solve_one_group(grupo, idxs_disp, usados, min_lbs, max_lbs, max_anchos, max_items, solver_params):
+    """
+    Resuelve un subproblema para los índices disponibles dentro de un grupo COLOR_A.
+    Retorna (indices_seleccionados, suma_lbs) o ([], 0) si no hay solución.
+    """
+    disponibles = [i for i in idxs_disp if i not in usados]
+    if len(disponibles) < 2:
+        return [], 0
+
+    # Pre-filtro rápido: descartar ítems que por sí solos exceden el máximo
+    disponibles = [i for i in disponibles if grupo.loc[i,'LBS_C'] <= max_lbs]
+    if len(disponibles) < 2:
+        return [], 0
+
+    model = cp_model.CpModel()
+    x     = {i: model.NewBoolVar(f"x{i}") for i in disponibles}
+
+    lbs_vals = [int(grupo.loc[i,'LBS_C']) for i in disponibles]
+    lbs_expr = sum(v * x[i] for v, i in zip(lbs_vals, disponibles))
+
+    model.Add(lbs_expr >= int(min_lbs))
+    model.Add(lbs_expr <= int(max_lbs))
+    model.Add(sum(x[i] for i in disponibles) <= int(max_items))
+
+    # Incompatibilidad de telas (solo pares con CERO intersección)
+    for ii, i in enumerate(disponibles):
+        for j in disponibles[ii+1:]:
+            if not (grupo.loc[i,'TELAS_SET'] & grupo.loc[j,'TELAS_SET']):
+                model.Add(x[i] + x[j] <= 1)
+
+    # Control de anchos
+    anchos_unicos = list(set().union(*grupo.loc[disponibles,'ANCHOS_SET']))
+    y = {a: model.NewBoolVar(f"y{a}") for a in anchos_unicos}
+    for i in disponibles:
+        for a in grupo.loc[i,'ANCHOS_SET']:
+            model.Add(x[i] <= y[a])
+    model.Add(sum(y[a] for a in anchos_unicos) <= int(max_anchos))
+
+    model.Maximize(lbs_expr)
+
+    solver = cp_model.CpSolver()
+    solver.parameters.CopyFrom(solver_params)
+    status = solver.Solve(model)
+
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return [], 0
+
+    sel  = [i for i in disponibles if solver.Value(x[i]) == 1]
+    suma = sum(grupo.loc[i,'LBS_C'] for i in sel)
+
+    if len(sel) < 2 or suma < min_lbs:
+        return [], 0
+
+    return sel, suma
+
+
+def run_loteador(df_cat, cap, max_items, solver_timeout):
+    """
+    Loteador principal.
+    Agrupa por COLOR_A (igual que el código Colab original) y resuelve
+    cada color independientemente — esto es lo que mantiene el tiempo corto.
+    """
     min_lbs    = to_int(cap['MINIMO'])
     max_lbs    = to_int(cap['MAXIMO'])
     mix_tipo   = str(cap['MIX']).upper()
     tipo_tej   = str(cap['TIPO_TEJIDO']).upper()
     max_anchos = to_int(cap['CTDMAXANCHOS'], 3)
 
-    grupo = df[df['MIX'].str.upper() == mix_tipo].copy()
+    # Filtros de categoría
+    grupo_cat = df_cat[df_cat['MIX'].str.upper() == mix_tipo].copy()
     if tipo_tej != 'TODOS':
-        grupo = grupo[grupo['TIPO_TEJIDO'].str.upper().isin([tipo_tej, 'TODOS'])]
+        grupo_cat = grupo_cat[grupo_cat['TIPO_TEJIDO'].str.upper().isin([tipo_tej, 'TODOS'])]
 
-    def parse_set(x):
-        return set(str(x).split("-"))
+    if grupo_cat.empty:
+        return [], grupo_cat
 
-    grupo['ANCHOS_SET'] = grupo['MIX_ANCHOS'].apply(parse_set)
-    grupo['TELAS_SET']  = grupo['ESTILO_C'].apply(parse_set)
+    grupo_cat['ANCHOS_SET'] = grupo_cat['MIX_ANCHOS'].apply(_parse_set)
+    grupo_cat['TELAS_SET']  = grupo_cat['ESTILO_C'].apply(_parse_set)
 
-    lotes  = []
-    usados = set()
-    idxs   = list(grupo.index)
-    lid    = 1
+    sparams = _solver_params(solver_timeout)
+    lotes   = []
+    lid     = 1
 
-    while True:
-        disponibles = [i for i in idxs if i not in usados]
-        if len(disponibles) < 2:
-            break
+    # ── AGRUPACIÓN POR COLOR_A (clave de velocidad) ──────────────────────────
+    for color, grupo in grupo_cat.groupby('COLOR_A'):
+        idxs   = _prefilter(grupo, min_lbs, max_lbs, max_items)
+        usados = set()
 
-        model = cp_model.CpModel()
-        x     = {i: model.NewBoolVar(f"x_{i}") for i in disponibles}
+        while True:
+            sel, suma = _solve_one_group(
+                grupo, idxs, usados,
+                min_lbs, max_lbs, max_anchos, max_items, sparams
+            )
+            if not sel:
+                break
+            for i in sel:
+                usados.add(i)
+            lotes.append((lid, sel, suma))
+            lid += 1
 
-        lbs_expr = sum(int(grupo.loc[i,'LBS_C']) * x[i] for i in disponibles)
-        model.Add(lbs_expr >= min_lbs)
-        model.Add(lbs_expr <= max_lbs)
-        model.Add(sum(x[i] for i in disponibles) <= max_items)
+    return lotes, grupo_cat
 
-        for i in disponibles:
-            for j in disponibles:
-                if i < j:
-                    if not (grupo.loc[i,'TELAS_SET'] & grupo.loc[j,'TELAS_SET']):
-                        model.Add(x[i] + x[j] <= 1)
-
-        anchos_unicos = list(set().union(*grupo.loc[disponibles,'ANCHOS_SET']))
-        y = {a: model.NewBoolVar(f"y_{a}") for a in anchos_unicos}
-        for i in disponibles:
-            for a in grupo.loc[i,'ANCHOS_SET']:
-                model.Add(x[i] <= y[a])
-        model.Add(sum(y[a] for a in anchos_unicos) <= max_anchos)
-
-        model.Maximize(lbs_expr)
-        solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = solver_timeout
-        status = solver.Solve(model)
-
-        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            break
-
-        sel = [i for i in disponibles if solver.Value(x[i]) == 1]
-        if len(sel) < 2:
-            break
-
-        suma = sum(grupo.loc[i,'LBS_C'] for i in sel)
-        for i in sel:
-            usados.add(i)
-        lotes.append((lid, sel, suma))
-        lid += 1
-
-    return lotes, grupo
 
 def run_all(df, capacidades, config):
     max_items      = to_int(config.get('MAX_ITEMS', 8))
@@ -275,37 +337,49 @@ def run_all(df, capacidades, config):
     all_rows = []
     progress = st.progress(0)
     status   = st.empty()
+    log_box  = st.empty()
+    log_lines = []
 
     for idx, cap in enumerate(active_caps):
         cat = cap['CATEGORIA']
-        status.markdown(f"<small>⚙ Procesando <b>{cat}</b>...</small>", unsafe_allow_html=True)
+        status.markdown(f"<small>⚙ Procesando categoría <b>{cat}</b> — {idx+1}/{len(active_caps)}</small>",
+                        unsafe_allow_html=True)
 
         lotes, grupo = run_loteador(df, cap, max_items, solver_timeout)
+
+        n_lotes_cat = len(lotes)
+        log_lines.append(f"✅ {cat}: {n_lotes_cat} lotes")
+        log_box.markdown(
+            "<div style='background:#f8fafc;border-radius:6px;padding:8px 12px;font-size:10px;max-height:120px;overflow-y:auto'>"
+            + "<br>".join(log_lines[-8:]) + "</div>",
+            unsafe_allow_html=True
+        )
 
         for lid, indices, suma in lotes:
             anchos_lote = set()
             for i in indices:
                 anchos_lote |= grupo.loc[i,'ANCHOS_SET']
-            ordenados = sorted(anchos_lote, key=lambda x: float(x), reverse=True)
+            ordenados  = sorted(anchos_lote, key=lambda a: float(a), reverse=True)
             set_anchos = "-".join(ordenados)
             cant       = len(anchos_lote)
             tipo_lote  = 'PURO' if cant == 1 else ('MIX_CONTROLADO' if cant <= 3 else 'MIX_ALTO')
 
             for i in indices:
                 row = grupo.loc[i].copy()
-                row['CATEGORIA']      = cat
-                row['LOTE_ID']        = f"{cat}-L{lid:03d}"
-                row['TOTAL_LOTE']     = round(suma, 1)
-                row['PCT_CARGA_REAL'] = round(suma / to_int(cap['MAXIMO'], 1) * 100, 1)
-                row['SET_ANCHOS_LOTE']= set_anchos
-                row['CANT_ANCHOS']    = cant
-                row['TIPO_LOTE_ANCHO']= tipo_lote
+                row['CATEGORIA']       = cat
+                row['LOTE_ID']         = f"{cat}-L{lid:03d}"
+                row['TOTAL_LOTE']      = round(suma, 1)
+                row['PCT_CARGA_REAL']  = round(suma / max(to_int(cap['MAXIMO'], 1), 1) * 100, 1)
+                row['SET_ANCHOS_LOTE'] = set_anchos
+                row['CANT_ANCHOS']     = cant
+                row['TIPO_LOTE_ANCHO'] = tipo_lote
                 all_rows.append(row)
 
         progress.progress((idx + 1) / len(active_caps))
 
     progress.empty()
     status.empty()
+    log_box.empty()
 
     if not all_rows:
         return pd.DataFrame()
