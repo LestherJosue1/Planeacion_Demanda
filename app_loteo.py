@@ -91,18 +91,32 @@ DEFAULT_CONFIG = {
     "APPLY_RULES_BLEACH": False,
 }
 
+
+
 DEFAULT_RESTRICCIONES_ANCHO = [
+
     {"STYLE":"PC54Y",  "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
+
     {"STYLE":"PC55LS", "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
+
     {"STYLE":"PC55Y",  "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
+
     {"STYLE":"PC330Y", "LIMITE_ANCHO":18,"PRIORIDAD_1":2200,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
+
     {"STYLE":"PC54-2", "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
+
     {"STYLE":"PC55-2", "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
+
     {"STYLE":"PC54LS", "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
+
     {"STYLE":"PC61Y", "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
+
     {"STYLE":"PC54DTG", "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
+
     {"STYLE":"LPC61", "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
+
     {"STYLE":"PC55P", "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
+
     {"STYLE":"PC61LSP", "LIMITE_ANCHO":18,"PRIORIDAD_1":2600,"PRIORIDAD_2":None,"PRIORIDAD_3":None,"ACTIVO":True},
 ]
 
@@ -233,18 +247,28 @@ def _prefilter(grupo, min_lbs, max_lbs, max_items):
     valid = list(grupo[mask].index)
     return valid
 
-def _solve_one_group(grupo, idxs_disp, usados, min_lbs, max_lbs, max_anchos, max_items, solver_params):
+def _solve_one_group_no_tela(grupo, idxs_disp, usados, min_lbs, max_lbs, max_anchos, max_items, solver_params):
     """
     Resuelve un subproblema para los índices disponibles dentro de un grupo COLOR_A.
+    SIN regla de incompatibilidad de telas — la compatibilidad está garantizada
+    por el agrupamiento por COLOR_A (mismo baño de tinte = mismas condiciones).
     Retorna (indices_seleccionados, suma_lbs) o ([], 0) si no hay solución.
     """
     disponibles = [i for i in idxs_disp if i not in usados]
-    if len(disponibles) < 2:
+    if len(disponibles) < 1:
         return [], 0
 
-    # Pre-filtro rápido: descartar ítems que por sí solos exceden el máximo
+    # Pre-filtro: descartar ítems que exceden el máximo individualmente
     disponibles = [i for i in disponibles if grupo.loc[i,'LBS_C'] <= max_lbs]
-    if len(disponibles) < 2:
+    if len(disponibles) < 1:
+        return [], 0
+
+    # Si hay un solo ítem y cae dentro del rango, lo asignamos directamente
+    if len(disponibles) == 1:
+        i    = disponibles[0]
+        lbs  = grupo.loc[i,'LBS_C']
+        if min_lbs <= lbs <= max_lbs:
+            return [i], lbs
         return [], 0
 
     model = cp_model.CpModel()
@@ -257,13 +281,7 @@ def _solve_one_group(grupo, idxs_disp, usados, min_lbs, max_lbs, max_anchos, max
     model.Add(lbs_expr <= int(max_lbs))
     model.Add(sum(x[i] for i in disponibles) <= int(max_items))
 
-    # Incompatibilidad de telas (solo pares con CERO intersección)
-    for ii, i in enumerate(disponibles):
-        for j in disponibles[ii+1:]:
-            if not (grupo.loc[i,'TELAS_SET'] & grupo.loc[j,'TELAS_SET']):
-                model.Add(x[i] + x[j] <= 1)
-
-    # Control de anchos
+    # Control de anchos únicos en el lote
     anchos_unicos = list(set().union(*grupo.loc[disponibles,'ANCHOS_SET']))
     y = {a: model.NewBoolVar(f"y{a}") for a in anchos_unicos}
     for i in disponibles:
@@ -286,23 +304,36 @@ def _solve_one_group(grupo, idxs_disp, usados, min_lbs, max_lbs, max_anchos, max
     sel  = [i for i in disponibles if solver.Value(x[i]) == 1]
     suma = sum(grupo.loc[i,'LBS_C'] for i in sel)
 
-    if len(sel) < 2 or suma < min_lbs:
+    if len(sel) < 1 or suma < min_lbs:
         return [], 0
 
     return sel, suma
 
 
+# kept for compatibility (not used)
+def _solve_one_group(grupo, idxs_disp, usados, min_lbs, max_lbs, max_anchos, max_items, solver_params):
+    return _solve_one_group_no_tela(grupo, idxs_disp, usados, min_lbs, max_lbs, max_anchos, max_items, solver_params)
+
+
 def run_loteador(df_cat, cap, max_items, solver_timeout):
     """
-    Loteador principal.
-    Agrupa por COLOR_A (igual que el código Colab original) y resuelve
-    cada color independientemente — esto es lo que mantiene el tiempo corto.
+    Loteador principal — agrupa por COLOR_A igual que el código Colab original.
+
+    BUGS CORREGIDOS vs versión anterior:
+    1. Límite de LOTES por categoría ahora se respeta (para al llegar al máximo).
+    2. Regla de incompatibilidad de telas ELIMINADA: en la DATA cada fila tiene
+       una sola TELA.CUERPO, así que la intersección entre dos filas distintas
+       siempre es vacía → bloqueaba casi todo. La compatibilidad real ya está
+       garantizada por el agrupamiento por COLOR_A (mismo baño de tinte).
+    3. ANCHO se trata como valor individual (no como set "MIX_ANCHOS") porque
+       cada fila de DATA tiene exactamente un ancho.
     """
     min_lbs    = to_int(cap['MINIMO'])
     max_lbs    = to_int(cap['MAXIMO'])
     mix_tipo   = str(cap['MIX']).upper()
     tipo_tej   = str(cap['TIPO_TEJIDO']).upper()
     max_anchos = to_int(cap['CTDMAXANCHOS'], 3)
+    max_lotes  = to_int(cap.get('LOTES', 9999))   # ← FIX 1: respetar límite de lotes
 
     # Filtros de categoría
     grupo_cat = df_cat[df_cat['MIX'].str.upper() == mix_tipo].copy()
@@ -312,20 +343,29 @@ def run_loteador(df_cat, cap, max_items, solver_timeout):
     if grupo_cat.empty:
         return [], grupo_cat
 
-    grupo_cat['ANCHOS_SET'] = grupo_cat['MIX_ANCHOS'].apply(_parse_set)
-    grupo_cat['TELAS_SET']  = grupo_cat['ESTILO_C'].apply(_parse_set)
+    # FIX 3: ANCHOS_SET como set de un solo valor (el ancho real de la fila)
+    grupo_cat['ANCHOS_SET'] = grupo_cat['ANCHO'].apply(lambda x: {str(x)})
 
     sparams = _solver_params(solver_timeout)
     lotes   = []
     lid     = 1
 
-    # ── AGRUPACIÓN POR COLOR_A (clave de velocidad) ──────────────────────────
+    # ── AGRUPACIÓN POR COLOR_A ────────────────────────────────────────────────
     for color, grupo in grupo_cat.groupby('COLOR_A'):
+
+        # FIX 1: si ya alcanzamos el límite de lotes de la categoría, parar
+        if len(lotes) >= max_lotes:
+            break
+
         idxs   = _prefilter(grupo, min_lbs, max_lbs, max_items)
         usados = set()
 
         while True:
-            sel, suma = _solve_one_group(
+            # FIX 1: revisar límite en cada iteración del while
+            if len(lotes) >= max_lotes:
+                break
+
+            sel, suma = _solve_one_group_no_tela(
                 grupo, idxs, usados,
                 min_lbs, max_lbs, max_anchos, max_items, sparams
             )
