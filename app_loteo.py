@@ -24,6 +24,8 @@ st.markdown("""
     background: linear-gradient(180deg, #003876 0%, #0057a8 60%, #0080c9 100%);
   }
   [data-testid="stSidebar"] * { color: #ffffff !important; font-size: 11.5px !important; }
+  [data-testid="stSidebar"] input { color: #1a1a2e !important; background: #ffffff !important; border-radius: 4px !important; }
+  [data-testid="stSidebar"] input::placeholder { color: #999 !important; }
   [data-testid="stSidebar"] .stSelectbox label,
   [data-testid="stSidebar"] .stNumberInput label,
   [data-testid="stSidebar"] .stTextInput label { color: #cce4ff !important; font-weight: 500 !important; }
@@ -203,16 +205,12 @@ def _parse_set(x):
     return set(str(x).split("-"))
 
 def _solver_params(timeout):
-    """OR-Tools SAT parameters tuned for speed on bin-packing problems."""
+    """OR-Tools SAT parameters tuned for speed — solo parametros universalmente soportados."""
     p = cp_model.SatParameters()
-    p.max_time_in_seconds          = float(timeout)
-    p.num_search_workers           = 4      # paralelismo (usa hasta 4 núcleos)
-    p.linearization_level          = 2      # lineariza más agresivamente
-    p.search_branching             = 3      # PORTFOLIO_WITH_QUICK_RESTART
-    p.use_lns_only                 = False
-    p.cp_model_presolve            = True
-    p.clause_cleanup_period        = 10000
-    p.log_search_progress          = False
+    p.max_time_in_seconds = float(timeout)
+    p.num_search_workers  = 4
+    p.cp_model_presolve   = True
+    p.log_search_progress = False
     return p
 
 def _prefilter(grupo, min_lbs, max_lbs, max_items):
@@ -418,17 +416,33 @@ def sidebar():
                 st.success(f"✓ '{sel}' cargado")
                 st.rerun()
 
-        new_name = st.text_input("Nombre del perfil", placeholder="Mi configuración...")
-        if st.button("💾 Guardar Perfil", use_container_width=True):
-            if new_name.strip():
-                save_current_profile(new_name.strip())
-                st.success(f"✓ Guardado: '{new_name.strip()}'")
-            else:
-                st.warning("Escribe un nombre")
+        new_name = st.text_input("Nombre del perfil", placeholder="Mi configuracion...",
+                                  label_visibility="visible")
+        col_s, col_d = st.columns(2)
+        with col_s:
+            if st.button("💾 Guardar", use_container_width=True):
+                if new_name.strip():
+                    save_current_profile(new_name.strip())
+                    st.success(f"Guardado: {new_name.strip()}")
+                else:
+                    st.warning("Escribe un nombre")
+
+        # Descarga del perfil seleccionado como JSON
+        if sel != "(ninguno)" and sel in profiles:
+            profile_json = json.dumps(profiles[sel], indent=2, default=str).encode()
+            with col_d:
+                st.download_button(
+                    "⬇ JSON",
+                    data=profile_json,
+                    file_name=f"perfil_{sel}.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
 
         if names:
-            del_sel = st.selectbox("Eliminar", [""] + names, label_visibility="collapsed")
-            if st.button("🗑 Eliminar", use_container_width=True) and del_sel:
+            st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
+            del_sel = st.selectbox("Eliminar perfil", [""] + names, label_visibility="collapsed")
+            if st.button("🗑 Eliminar seleccionado", use_container_width=True) and del_sel:
                 profiles.pop(del_sel, None)
                 save_profiles(profiles)
                 st.rerun()
