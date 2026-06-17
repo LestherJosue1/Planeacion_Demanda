@@ -366,140 +366,236 @@ def run_loteador(df_cat, cap, max_items, solver_timeout):
 
 
 def _build_reports(result, df_original, capacidades):
-    """Construye todas las hojas del reporte Excel, equivalentes al output de Colab."""
+    """Construye todas las hojas del reporte Excel — estructura identica al output de Colab."""
 
-    # ── DETALLE_LOTES ────────────────────────────────────────────────────────
-    detalle_cols = ['LOTE_ID','SET_ANCHOS_LOTE','CATEGORIA','MIX','ESTILO_C','COLOR_A',
-                    'ANCHO','LBS_C','TOTAL_LOTE','PCT_CARGA_REAL','CANT_ANCHOS',
-                    'TIPO_LOTE_ANCHO','PRIORIDAD','COLOR_R','FAMILIA','TIPO_TEJIDO','PCT_CARGA']
-    detalle = result[[c for c in detalle_cols if c in result.columns]].copy()
-    detalle = detalle.rename(columns={
-        'SET_ANCHOS_LOTE':'ANCHOS_LOTE','ESTILO_C':'TELA.CUERPO',
-        'COLOR_A':'COLOR','LBS_C':'LBS_ASIGNADAS',
-    })
-
-    # ── RESUMEN_LOTES ────────────────────────────────────────────────────────
-    resumen = (result.groupby(['LOTE_ID','SET_ANCHOS_LOTE','CATEGORIA','MIX'])
-               .agg(
-                   TELA_CUERPO   =('ESTILO_C',  lambda x: x.iloc[0]),
-                   COLOR_KEY     =('COLOR_A',   lambda x: '|'.join(x.unique())),
-                   LBS_TOTAL     =('TOTAL_LOTE', 'first'),
-                   SKU_DISTINTOS =('ANCHO',     'count'),
-                   ANCHOS_UNICOS =('CANT_ANCHOS','first'),
-                   TIPO_LOTE     =('TIPO_LOTE_ANCHO','first'),
-                   CAPACIDAD_PERDIDA=('TOTAL_LOTE', lambda x: 0),  # placeholder
-                   PRIORIDAD     =('PRIORIDAD',  lambda x: x.iloc[0] if 'PRIORIDAD' in result.columns else ''),
-               )
-               .reset_index()
-               .rename(columns={'SET_ANCHOS_LOTE':'ANCHOS_LOTE','TELA_CUERPO':'TELA.CUERPO'}))
-
-    # CAPACIDAD_PERDIDA = MAXIMO_CAT - LBS_TOTAL
     cat_max = {c['CATEGORIA']: to_int(c['MAXIMO']) for c in capacidades}
-    resumen['CAPACIDAD_PERDIDA'] = resumen.apply(
-        lambda r: max(0, cat_max.get(r['CATEGORIA'], 0) - r['LBS_TOTAL']), axis=1)
+    cat_min = {c['CATEGORIA']: to_int(c['MINIMO']) for c in capacidades}
 
-    # ── EXCEDENTES ───────────────────────────────────────────────────────────
-    loteados_idx = set(result.index) if 'orig_index' not in result.columns else set(result['orig_index'])
-    excedentes   = df_original[~df_original.index.isin(loteados_idx)].copy()
-    if not excedentes.empty:
-        excedentes = excedentes.rename(columns={
-            'COLOR_A':'COLOR','ESTILO_C':'TELA.CUERPO','LBS_C':'LBS_RESTANTES'})
-        excedentes['LBS_SCRAP'] = 0
-        exc_cols = [c for c in ['TELA.CUERPO','COLOR','ANCHO','MIX','PRIORIDAD','LBS_RESTANTES','LBS_SCRAP','FAMILIA','COLOR_R'] if c in excedentes.columns]
-        excedentes = excedentes[exc_cols]
+    # ── DETALLE_LOTES — igual columnas que Colab ─────────────────────────────
+    # Columnas Colab: LOTE_ID, ANCHOS_LOTE, CATEGORIA, MIX, TELA.CUERPO, COLOR,
+    #   TONO, LNK, PRIORIDAD, BLOQUE, ANCHO.F.C, CONSUMO_C, FAMILIA, COLOR_R,
+    #   STYLE, LBS_ASIGNADAS, APLICA_REGLA, PRIORIDAD_USADA, DOCENAS
+    det = result.copy()
+    det = det.rename(columns={
+        'SET_ANCHOS_LOTE': 'ANCHOS_LOTE',
+        'ESTILO_C':        'TELA.CUERPO',
+        'COLOR_A':         'COLOR',
+        'LBS_C':           'LBS_ASIGNADAS',
+        'ANCHO':           'ANCHO.F.C',
+    })
+    # Columnas derivadas que el Colab calculaba
+    det['BLOQUE']          = det.get('PRIORIDAD', '')  # en data no hay BLOQUE separado
+    det['APLICA_REGLA']    = 'NONE'
+    det['PRIORIDAD_USADA'] = det['CATEGORIA'].map(cat_max)
+    det['DOCENAS']         = (det['LBS_ASIGNADAS'] / det.get('CONSUMO_C', pd.Series(1, index=det.index)).replace(0, 1)).round(2) if 'CONSUMO_C' in det.columns else 0
+    det['LBS_EXTRA_SOBRE_ORDEN'] = 0
+
+    det_cols = [c for c in [
+        'LOTE_ID','ANCHOS_LOTE','CATEGORIA','MIX','TELA.CUERPO','COLOR',
+        'TONO','LNK','PRIORIDAD','BLOQUE','ANCHO.F.C','CONSUMO_C',
+        'FAMILIA','COLOR_R','STYLE','LBS_ASIGNADAS','LBS_EXTRA_SOBRE_ORDEN',
+        'APLICA_REGLA','PRIORIDAD_USADA','DOCENAS','TIPO_TEJIDO','PCT_CARGA',
+        'TOTAL_LOTE','PCT_CARGA_REAL','CANT_ANCHOS','TIPO_LOTE_ANCHO'
+    ] if c in det.columns]
+    detalle = det[det_cols].copy()
+
+    # ── RESUMEN_LOTES — igual columnas que Colab ─────────────────────────────
+    # Colab: LOTE_ID, ANCHOS_LOTE, CATEGORIA, MIX, TELA.CUERPO, COLOR/TONO_KEY,
+    #   LBS_TOTAL, MIN_RANGO, MAX_RANGO, CAPACIDAD_PERDIDA, SKU_DISTINTOS,
+    #   ANCHOS_UNICOS, BLOQUE_DOMINANTE, REGLA_DOMINANTE, PRIORIDAD_FINAL,
+    #   COMBO_ANCHOS, STYLE_CRITICO, CANT_REGLAS_APLICADAS, UPGRADE_CATEGORIA
+    res_grp = result.groupby(['LOTE_ID','SET_ANCHOS_LOTE','CATEGORIA','MIX'])
+    resumen = res_grp.agg(
+        TELA_CUERPO      = ('ESTILO_C',  lambda x: x.iloc[0]),
+        COLOR_TONO_KEY   = ('COLOR_A',   lambda x: '|'.join(sorted(x.unique()))),
+        LBS_TOTAL        = ('TOTAL_LOTE','first'),
+        MIN_RANGO        = ('CATEGORIA', lambda x: cat_min.get(x.iloc[0], 0)),
+        MAX_RANGO        = ('CATEGORIA', lambda x: cat_max.get(x.iloc[0], 0)),
+        SKU_DISTINTOS    = ('ANCHO',     'count'),
+        ANCHOS_UNICOS    = ('CANT_ANCHOS','first'),
+        BLOQUE_DOMINANTE = ('PRIORIDAD', lambda x: x.mode()[0] if len(x) else ''),
+        PRIORIDAD_FINAL  = ('CATEGORIA', lambda x: cat_max.get(x.iloc[0], 0)),
+        TIPO_LOTE        = ('TIPO_LOTE_ANCHO','first'),
+    ).reset_index().rename(columns={
+        'SET_ANCHOS_LOTE':'ANCHOS_LOTE',
+        'TELA_CUERPO':    'TELA.CUERPO',
+        'COLOR_TONO_KEY': 'COLOR/TONO_KEY',
+    })
+    resumen['CAPACIDAD_PERDIDA']    = resumen.apply(lambda r: max(0, cat_max.get(r['CATEGORIA'],0) - r['LBS_TOTAL']), axis=1)
+    resumen['REGLA_DOMINANTE']      = 'NONE'
+    resumen['COMBO_ANCHOS']         = resumen['ANCHOS_UNICOS'] > 1
+    resumen['STYLE_CRITICO']        = False
+    resumen['CANT_REGLAS_APLICADAS']= 0
+    resumen['UPGRADE_CATEGORIA']    = 1
+    col_order = ['LOTE_ID','ANCHOS_LOTE','CATEGORIA','MIX','TELA.CUERPO','COLOR/TONO_KEY',
+                 'LBS_TOTAL','MIN_RANGO','MAX_RANGO','CAPACIDAD_PERDIDA','SKU_DISTINTOS',
+                 'ANCHOS_UNICOS','BLOQUE_DOMINANTE','REGLA_DOMINANTE','PRIORIDAD_FINAL',
+                 'COMBO_ANCHOS','STYLE_CRITICO','CANT_REGLAS_APLICADAS','UPGRADE_CATEGORIA','TIPO_LOTE']
+    resumen = resumen[[c for c in col_order if c in resumen.columns]]
+
+    # ── EXCEDENTES — igual columnas que Colab ────────────────────────────────
+    # Colab: LNK, TELA.CUERPO, COLOR, TONO, MIX, PRIORIDAD, BLOQUE,
+    #        ANCHO.F.C, ANCHO.F.M, TOTAL, LBS_RESTANTES, LBS_SCRAP
+    assigned_idx = set(result.index)
+    exc_raw = df_original[~df_original.index.isin(assigned_idx)].copy()
+    if not exc_raw.empty:
+        exc_raw = exc_raw.rename(columns={
+            'COLOR_A':   'COLOR',
+            'ESTILO_C':  'TELA.CUERPO',
+            'LBS_C':     'LBS_RESTANTES',
+            'ANCHO':     'ANCHO.F.C',
+        })
+        exc_raw['LBS_SCRAP'] = 0
+        exc_raw['ANCHO.F.M'] = 0
+        exc_raw['BLOQUE']    = exc_raw.get('PRIORIDAD', '')
+        exc_raw['TOTAL']     = exc_raw['LBS_RESTANTES']
+        exc_cols = [c for c in ['LNK','TELA.CUERPO','COLOR','TONO','MIX','PRIORIDAD',
+                                 'BLOQUE','ANCHO.F.C','ANCHO.F.M','TOTAL','LBS_RESTANTES','LBS_SCRAP'] if c in exc_raw.columns]
+        excedentes = exc_raw[exc_cols]
     else:
-        excedentes = pd.DataFrame(columns=['TELA.CUERPO','COLOR','ANCHO','MIX','PRIORIDAD','LBS_RESTANTES','LBS_SCRAP'])
+        excedentes = pd.DataFrame(columns=['LNK','TELA.CUERPO','COLOR','TONO','MIX',
+                                            'PRIORIDAD','BLOQUE','ANCHO.F.C','ANCHO.F.M',
+                                            'TOTAL','LBS_RESTANTES','LBS_SCRAP'])
 
-    # ── CAPACIDAD_X_CATEG ────────────────────────────────────────────────────
-    lbs_x_cat   = result.groupby('CATEGORIA')['TOTAL_LOTE'].sum().reset_index()
+    # ── CAPACIDAD_X_CATEG — LBS_ASIGNADAS = suma de TOTAL_LOTE (un valor por lote) ──
+    # FIX: usar first() de TOTAL_LOTE por lote, no suma de filas individuales
+    lbs_x_cat = (result.groupby(['CATEGORIA','LOTE_ID'])['TOTAL_LOTE']
+                 .first()
+                 .reset_index()
+                 .groupby('CATEGORIA')['TOTAL_LOTE']
+                 .sum()
+                 .reset_index())
     lbs_x_cat.columns = ['CATEGORIA','LBS_ASIGNADAS']
+
     cap_rows = []
     for c in capacidades:
-        cat = c['CATEGORIA']
-        mix = c['MIX']
-        minv = to_int(c['MINIMO'])
-        maxv = to_int(c['MAXIMO'])
-        lotes_n  = to_int(c['LOTES'])
-        semanas  = to_float(c.get('SEMANAS', 4))
-        cap_lbs  = round(lotes_n * DIAS_SEMANA * semanas * maxv, 0)
-        # cap_lbs = lotes/dia * 7 dias * semanas * lbs_maximo_por_lote
-        asig     = lbs_x_cat[lbs_x_cat['CATEGORIA']==cat]['LBS_ASIGNADAS'].sum()
-        cap_rows.append({'CATEGORIA':cat,'MIX':mix,'MINIMO':minv,'MAXIMO':maxv,
-                         'LOTES':lotes_n,'SEMANAS':semanas,'CAPACIDAD_LBS':cap_lbs,
-                         'LBS_ASIGNADAS':round(asig,1),'DIFERENCIA':round(cap_lbs-asig,1),'ACTIVO':c.get('ACTIVO',True)})
+        cat     = c['CATEGORIA']
+        mix     = c['MIX']
+        minv    = to_int(c['MINIMO'])
+        maxv    = to_int(c['MAXIMO'])
+        lotes_n = to_int(c['LOTES'])
+        semanas = to_float(c.get('SEMANAS', 4))
+        cap_lbs = round(lotes_n * DIAS_SEMANA * semanas * maxv, 0)
+        asig    = float(lbs_x_cat[lbs_x_cat['CATEGORIA']==cat]['LBS_ASIGNADAS'].sum())
+        n_lotes = int(result[result['CATEGORIA']==cat]['LOTE_ID'].nunique()) if cat in result['CATEGORIA'].values else 0
+        cap_rows.append({
+            'CATEGORIA': cat, 'MIX': mix, 'MINIMO': minv, 'MAXIMO': maxv,
+            'LOTES_DIA': lotes_n, 'SEMANAS': semanas,
+            'MAX_LOTES_PERIODO': int(lotes_n * DIAS_SEMANA * semanas),
+            'LOTES_GENERADOS': n_lotes,
+            'CAPACIDAD_LBS': cap_lbs,
+            'LBS_ASIGNADAS': round(asig, 1),
+            'DIFERENCIA': round(cap_lbs - asig, 1),
+            'PCT_OCUPACION': round(asig / cap_lbs * 100, 1) if cap_lbs > 0 else 0,
+            'ACTIVO': c.get('ACTIVO', True),
+        })
     cap_df = pd.DataFrame(cap_rows)
 
-    # ── PRIORIDAD_VS_ASIG ────────────────────────────────────────────────────
-    if 'PRIORIDAD' in result.columns and 'MIX' in result.columns:
-        prio_df = (result.groupby(['MIX','PRIORIDAD'])
-                   .agg(LBS_ASIGNADAS=('LBS_C','sum'))
-                   .reset_index())
-        total_orig = (df_original.groupby(['MIX','PRIORIDAD'])
-                      .agg(LBS_BASE=('LBS_C','sum'))
-                      .reset_index()) if 'PRIORIDAD' in df_original.columns else pd.DataFrame()
-        if not total_orig.empty:
-            prio_df = prio_df.merge(total_orig, on=['MIX','PRIORIDAD'], how='left')
-            prio_df['LBS_SIN_ASIGNAR'] = prio_df['LBS_BASE'] - prio_df['LBS_ASIGNADAS']
+    # ── PRIORIDAD_VS_ASIG — igual que Colab ──────────────────────────────────
+    # Colab: MIX, BLOQUE, LBS_BASE, LBS_ASIGNADAS, LBS_SIN_ASIGNAR
+    if 'PRIORIDAD' in result.columns:
+        prio_asig = (result.groupby(['MIX','PRIORIDAD'])
+                     .agg(LBS_ASIGNADAS=('LBS_C','sum'))
+                     .reset_index()
+                     .rename(columns={'PRIORIDAD':'BLOQUE'}))
+        if 'PRIORIDAD' in df_original.columns:
+            prio_base = (df_original.groupby(['MIX','PRIORIDAD'])
+                         .agg(LBS_BASE=('LBS_C','sum'))
+                         .reset_index()
+                         .rename(columns={'PRIORIDAD':'BLOQUE'}))
+            prio_df = prio_base.merge(prio_asig, on=['MIX','BLOQUE'], how='left').fillna(0)
         else:
+            prio_df = prio_asig.copy()
             prio_df['LBS_BASE'] = prio_df['LBS_ASIGNADAS']
-            prio_df['LBS_SIN_ASIGNAR'] = 0
+        prio_df['LBS_SIN_ASIGNAR'] = prio_df['LBS_BASE'] - prio_df['LBS_ASIGNADAS']
+        prio_df = prio_df[['MIX','BLOQUE','LBS_BASE','LBS_ASIGNADAS','LBS_SIN_ASIGNAR']]
     else:
-        prio_df = pd.DataFrame(columns=['MIX','PRIORIDAD','LBS_BASE','LBS_ASIGNADAS','LBS_SIN_ASIGNAR'])
+        prio_df = pd.DataFrame(columns=['MIX','BLOQUE','LBS_BASE','LBS_ASIGNADAS','LBS_SIN_ASIGNAR'])
 
-    # ── REPORTE_REGLAS_MIX ───────────────────────────────────────────────────
-    reglas_mix = (result.groupby(['LOTE_ID','SET_ANCHOS_LOTE','MIX','CATEGORIA'])
-                  .agg(LBS_TOTAL    =('TOTAL_LOTE','first'),
-                       ANCHOS_UNICOS=('CANT_ANCHOS','first'),
-                       TIPO_LOTE    =('TIPO_LOTE_ANCHO','first'),
-                       SKU_DISTINTOS=('ANCHO','count'))
-                  .reset_index()
-                  .rename(columns={'SET_ANCHOS_LOTE':'ANCHOS_LOTE'}))
-    reglas_mix['CAPACIDAD_PERDIDA'] = reglas_mix.apply(
-        lambda r: max(0, cat_max.get(r['CATEGORIA'], 0) - r['LBS_TOTAL']), axis=1)
+    # ── LNK_COMPLETITUD — igual que Colab ────────────────────────────────────
+    # Colab: MIX, LNK, LBS_BASE, LBS_ASIGNADAS, LBS_SCRAP, BALANCE, ESTADO
+    lnk_col = next((c for c in ['LNK','SKU','CUT-TICKET'] if c in df_original.columns), None)
+    if lnk_col:
+        lnk_base = (df_original.groupby(lnk_col)
+                    .agg(LBS_BASE=('LBS_C','sum'))
+                    .reset_index())
+        # MIX and PRIORIDAD per LNK
+        lnk_meta = df_original[[lnk_col,'MIX']].drop_duplicates(subset=[lnk_col])
 
-    # ── LNK_COMPLETITUD ──────────────────────────────────────────────────────
-    lnk_col = None
-    for c in ['LNK','SKU','CUT-TICKET']:
-        if c in df_original.columns:
-            lnk_col = c
-            break
-    if lnk_col and lnk_col in result.columns:
-        lnk_base = df_original.groupby(lnk_col)['LBS_C'].sum().reset_index()
-        lnk_base.columns = [lnk_col,'LBS_BASE']
-        lnk_asig = result.groupby(lnk_col)['LBS_C'].sum().reset_index() if lnk_col in result.columns else pd.DataFrame()
-        if not lnk_asig.empty:
-            lnk_asig.columns = [lnk_col,'LBS_ASIGNADAS']
+        if lnk_col in result.columns:
+            lnk_asig = (result.groupby(lnk_col)
+                        .agg(LBS_ASIGNADAS=('LBS_C','sum'))
+                        .reset_index())
             lnk_comp = lnk_base.merge(lnk_asig, on=lnk_col, how='left').fillna(0)
-            lnk_comp['LBS_SCRAP']  = 0
-            lnk_comp['BALANCE']    = lnk_comp['LBS_BASE'] - lnk_comp['LBS_ASIGNADAS']
-            lnk_comp['ESTADO']     = lnk_comp['BALANCE'].apply(lambda b: 'COMPLETO' if abs(b)<1 else ('PARCIAL' if b>0 else 'EXCEDIDO'))
-            lnk_comp = lnk_comp.merge(df_original[[lnk_col,'MIX']].drop_duplicates(), on=lnk_col, how='left') if 'MIX' in df_original.columns else lnk_comp
         else:
             lnk_comp = lnk_base.copy()
             lnk_comp['LBS_ASIGNADAS'] = 0
-            lnk_comp['ESTADO'] = 'SIN_ASIGNAR'
-    else:
-        lnk_comp = pd.DataFrame(columns=['LNK','LBS_BASE','LBS_ASIGNADAS','BALANCE','ESTADO'])
 
-    # ── RESUMEN_CATEGORIA (summary por cat con tipo lote) ───────────────────
+        lnk_comp = lnk_comp.merge(lnk_meta, on=lnk_col, how='left')
+        lnk_comp['LBS_SCRAP'] = 0
+        lnk_comp['BALANCE']   = lnk_comp['LBS_BASE'] - lnk_comp['LBS_ASIGNADAS']
+        lnk_comp['ESTADO']    = lnk_comp['BALANCE'].apply(
+            lambda b: 'COMPLETO' if abs(b) < 1 else ('PARCIAL' if b > 0 else 'EXCEDIDO'))
+        lnk_comp = lnk_comp[['MIX', lnk_col, 'LBS_BASE','LBS_ASIGNADAS','LBS_SCRAP','BALANCE','ESTADO']]
+        lnk_comp = lnk_comp.sort_values(['MIX', lnk_col]).reset_index(drop=True)
+    else:
+        lnk_comp = pd.DataFrame(columns=['MIX','LNK','LBS_BASE','LBS_ASIGNADAS','LBS_SCRAP','BALANCE','ESTADO'])
+
+    # ── REPORTE_REGLAS_MIX ───────────────────────────────────────────────────
+    reglas_mix = (result.groupby(['LOTE_ID','SET_ANCHOS_LOTE','MIX','CATEGORIA'])
+                  .agg(LBS_TOTAL     =('TOTAL_LOTE','first'),
+                       ANCHOS_UNICOS =('CANT_ANCHOS','first'),
+                       TIPO_LOTE     =('TIPO_LOTE_ANCHO','first'),
+                       SKU_DISTINTOS =('ANCHO','count'),
+                       BLOQUE        =('PRIORIDAD', lambda x: x.mode()[0] if len(x) else ''))
+                  .reset_index()
+                  .rename(columns={'SET_ANCHOS_LOTE':'ANCHOS_LOTE'}))
+    reglas_mix['CAPACIDAD_PERDIDA']    = reglas_mix.apply(lambda r: max(0, cat_max.get(r['CATEGORIA'],0) - r['LBS_TOTAL']), axis=1)
+    reglas_mix['REGLA_DOMINANTE']      = 'NONE'
+    reglas_mix['CANT_REGLAS_APLICADAS']= 0
+    reglas_mix['UPGRADE_CATEGORIA']    = 1
+
+    # ── OVERSHOOT_SUMMARY — LNK con LBS_ASIGNADAS > LBS_BASE ────────────────
+    if not lnk_comp.empty and 'BALANCE' in lnk_comp.columns:
+        overshoot = lnk_comp[lnk_comp['BALANCE'] < 0].copy()
+        overshoot = overshoot.rename(columns={'BALANCE':'LBS_EXTRA_SOBRE_ORDEN'})
+        overshoot['LBS_EXTRA_SOBRE_ORDEN'] = overshoot['LBS_EXTRA_SOBRE_ORDEN'].abs()
+        lnk_key = lnk_col if lnk_col else 'LNK'
+        overshoot_cols = [c for c in ['MIX', lnk_key, 'LBS_EXTRA_SOBRE_ORDEN','LBS_ASIGNADAS'] if c in overshoot.columns]
+        overshoot = overshoot[overshoot_cols]
+    else:
+        overshoot = pd.DataFrame(columns=['MIX','LNK','LBS_EXTRA_SOBRE_ORDEN','LBS_ASIGNADAS'])
+
+    # ── RESUMEN_CATEGORIA ────────────────────────────────────────────────────
     res_cat = (result.groupby('CATEGORIA')
                .agg(Lotes         =('LOTE_ID','nunique'),
                     Registros      =('LOTE_ID','count'),
-                    LBS_Total      =('LBS_C','sum'),
+                    LBS_Loteadas   =('TOTAL_LOTE', lambda x: result.loc[x.index].groupby('LOTE_ID')['TOTAL_LOTE'].first().sum()),
                     Puros          =('TIPO_LOTE_ANCHO', lambda x: (x=='PURO').sum()),
                     Mix_Controlado =('TIPO_LOTE_ANCHO', lambda x: (x=='MIX_CONTROLADO').sum()),
-                    Mix_Alto       =('TIPO_LOTE_ANCHO', lambda x: (x=='MIX_ALTO').sum()))
+                    Mix_Alto       =('TIPO_LOTE_ANCHO', lambda x: (x=='MIX_ALTO').sum()),
+                    Avg_Fill_Pct   =('PCT_CARGA_REAL',  'mean'))
                .reset_index())
+    res_cat['Avg_Fill_Pct'] = res_cat['Avg_Fill_Pct'].round(1)
+
+    # ── PARAMETROS — configuración usada ─────────────────────────────────────
+    param_rows = []
+    for c in capacidades:
+        for k, v in c.items():
+            param_rows.append({'CATEGORIA': c['CATEGORIA'], 'PARAMETRO': k, 'VALOR': v})
+    parametros = pd.DataFrame(param_rows)
 
     return {
-        'DETALLE_LOTES':     detalle,
-        'RESUMEN_LOTES':     resumen,
-        'RESUMEN_CATEGORIA': res_cat,
-        'EXCEDENTES':        excedentes,
-        'CAPACIDAD_X_CATEG': cap_df,
-        'PRIORIDAD_VS_ASIG': prio_df,
-        'LNK_COMPLETITUD':   lnk_comp,
-        'REPORTE_REGLAS_MIX':reglas_mix,
+        'DETALLE_LOTES':          detalle,
+        'RESUMEN_LOTES':          resumen,
+        'RESUMEN_CATEGORIA':      res_cat,
+        'EXCEDENTES':             excedentes,
+        'CAPACIDAD_X_CATEG':      cap_df,
+        'PRIORIDAD_VS_ASIG':      prio_df,
+        'LNK_COMPLETITUD':        lnk_comp,
+        'REPORTE_REGLAS_MIX':     reglas_mix,
+        'OVERSHOOT_SUMMARY':      overshoot,
+        'PARAMETROS':             parametros,
     }
 
 
@@ -958,19 +1054,28 @@ def tab_resultados():
             st.dataframe(df_exc, use_container_width=True, height=350)
 
     with rt6:
-        st.caption("Estado de completitud por LNK/SKU")
+        st.caption("Estado de completitud por LNK/SKU — qué tan completo quedó cada corte")
         df_lnk = reportes.get('LNK_COMPLETITUD', pd.DataFrame())
-        if not df_lnk.empty:
-            if 'ESTADO' in df_lnk.columns:
-                completos = (df_lnk['ESTADO']=='COMPLETO').sum()
-                parciales = (df_lnk['ESTADO']=='PARCIAL').sum()
-                col_a, col_b = st.columns(2)
-                col_a.markdown(f"<div class='metric-box'><div class='metric-val' style='color:#1a7a4a'>{completos}</div><div class='metric-lbl'>Completos</div></div>", unsafe_allow_html=True)
-                col_b.markdown(f"<div class='metric-box'><div class='metric-val' style='color:#e67e22'>{parciales}</div><div class='metric-lbl'>Parciales</div></div>", unsafe_allow_html=True)
-                st.markdown("<br>", unsafe_allow_html=True)
-            st.dataframe(df_lnk, use_container_width=True, height=350)
+        if not df_lnk.empty and 'ESTADO' in df_lnk.columns:
+            completos  = (df_lnk['ESTADO']=='COMPLETO').sum()
+            parciales  = (df_lnk['ESTADO']=='PARCIAL').sum()
+            excedidos  = (df_lnk['ESTADO']=='EXCEDIDO').sum()
+            sin_asig   = (df_lnk['ESTADO']=='SIN_ASIGNAR').sum()
+            lc1,lc2,lc3,lc4 = st.columns(4)
+            lc1.markdown(f"<div class='metric-box'><div class='metric-val' style='color:#1a7a4a'>{completos}</div><div class='metric-lbl'>Completos</div></div>", unsafe_allow_html=True)
+            lc2.markdown(f"<div class='metric-box'><div class='metric-val' style='color:#e67e22'>{parciales}</div><div class='metric-lbl'>Parciales</div></div>", unsafe_allow_html=True)
+            lc3.markdown(f"<div class='metric-box'><div class='metric-val' style='color:#c0392b'>{excedidos}</div><div class='metric-lbl'>Excedidos</div></div>", unsafe_allow_html=True)
+            lc4.markdown(f"<div class='metric-box'><div class='metric-val' style='color:#7f8c8d'>{sin_asig}</div><div class='metric-lbl'>Sin Asignar</div></div>", unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)
+            # Filter
+            est_opts = ['Todos'] + sorted(df_lnk['ESTADO'].unique().tolist())
+            est_f = st.selectbox("Filtrar estado", est_opts, key="lnk_est")
+            df_lnk_show = df_lnk if est_f == 'Todos' else df_lnk[df_lnk['ESTADO']==est_f]
+            st.dataframe(df_lnk_show, use_container_width=True, height=380)
+        elif not df_lnk.empty:
+            st.dataframe(df_lnk, use_container_width=True, height=380)
         else:
-            st.info("No hay columna LNK disponible en los datos.")
+            st.info("No hay columna LNK/SKU disponible en los datos. Agrega una columna 'LNK' a tu hoja DATA.")
 
     with rt7:
         st.caption("Resumen de reglas aplicadas por lote y tipo de ancho")
@@ -989,14 +1094,16 @@ def tab_resultados():
     fname = f"loteo_OPTIMO_{ts}.xlsx"
     buf   = BytesIO()
     sheet_order = [
-        ('DETALLE_LOTES',     reportes.get('DETALLE_LOTES',     result)),
-        ('RESUMEN_LOTES',     reportes.get('RESUMEN_LOTES',     pd.DataFrame())),
-        ('RESUMEN_CATEGORIA', reportes.get('RESUMEN_CATEGORIA', pd.DataFrame())),
-        ('EXCEDENTES',        reportes.get('EXCEDENTES',        pd.DataFrame())),
-        ('CAPACIDAD_X_CATEG', reportes.get('CAPACIDAD_X_CATEG', pd.DataFrame())),
-        ('PRIORIDAD_VS_ASIG', reportes.get('PRIORIDAD_VS_ASIG', pd.DataFrame())),
-        ('LNK_COMPLETITUD',   reportes.get('LNK_COMPLETITUD',   pd.DataFrame())),
-        ('REPORTE_REGLAS_MIX',reportes.get('REPORTE_REGLAS_MIX',pd.DataFrame())),
+        ('DETALLE_LOTES',      reportes.get('DETALLE_LOTES',      result)),
+        ('RESUMEN_LOTES',      reportes.get('RESUMEN_LOTES',      pd.DataFrame())),
+        ('RESUMEN_CATEGORIA',  reportes.get('RESUMEN_CATEGORIA',  pd.DataFrame())),
+        ('EXCEDENTES',         reportes.get('EXCEDENTES',         pd.DataFrame())),
+        ('CAPACIDAD_X_CATEG',  reportes.get('CAPACIDAD_X_CATEG',  pd.DataFrame())),
+        ('PRIORIDAD_VS_ASIG',  reportes.get('PRIORIDAD_VS_ASIG',  pd.DataFrame())),
+        ('LNK_COMPLETITUD',    reportes.get('LNK_COMPLETITUD',    pd.DataFrame())),
+        ('REPORTE_REGLAS_MIX', reportes.get('REPORTE_REGLAS_MIX', pd.DataFrame())),
+        ('OVERSHOOT_SUMMARY',  reportes.get('OVERSHOOT_SUMMARY',  pd.DataFrame())),
+        ('PARAMETROS',         reportes.get('PARAMETROS',         pd.DataFrame())),
     ]
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
         for sheet_name, df_sheet in sheet_order:
