@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import json
 import os
+import time
+import threading
 from datetime import datetime
 import pytz
 from ortools.sat.python import cp_model
@@ -205,10 +207,10 @@ def _parse_set(x):
     return set(str(x).split("-"))
 
 def _solver_params(timeout):
-    """OR-Tools SAT parameters tuned for speed — solo parametros universalmente soportados."""
+    """OR-Tools SAT parameters — compatibles con Streamlit Cloud (1 worker)."""
     p = cp_model.SatParameters()
     p.max_time_in_seconds = float(timeout)
-    p.num_search_workers  = 4
+    p.num_search_workers  = 1   # Streamlit Cloud: 1 CPU, mas de 1 causa OOM
     p.cp_model_presolve   = True
     p.log_search_progress = False
     return p
@@ -332,26 +334,13 @@ def run_all(df, capacidades, config):
     solver_timeout = to_float(config.get('SOLVER_TIMEOUT', 5))
     active_caps    = [c for c in capacidades if c.get('ACTIVO', True)]
 
-    all_rows = []
-    progress = st.progress(0)
-    status   = st.empty()
-    log_box  = st.empty()
+    all_rows  = []
     log_lines = []
 
     for idx, cap in enumerate(active_caps):
         cat = cap['CATEGORIA']
-        status.markdown(f"<small>⚙ Procesando categoría <b>{cat}</b> — {idx+1}/{len(active_caps)}</small>",
-                        unsafe_allow_html=True)
 
         lotes, grupo = run_loteador(df, cap, max_items, solver_timeout)
-
-        n_lotes_cat = len(lotes)
-        log_lines.append(f"✅ {cat}: {n_lotes_cat} lotes")
-        log_box.markdown(
-            "<div style='background:#f8fafc;border-radius:6px;padding:8px 12px;font-size:10px;max-height:120px;overflow-y:auto'>"
-            + "<br>".join(log_lines[-8:]) + "</div>",
-            unsafe_allow_html=True
-        )
 
         for lid, indices, suma in lotes:
             anchos_lote = set()
@@ -372,12 +361,6 @@ def run_all(df, capacidades, config):
                 row['CANT_ANCHOS']     = cant
                 row['TIPO_LOTE_ANCHO'] = tipo_lote
                 all_rows.append(row)
-
-        progress.progress((idx + 1) / len(active_caps))
-
-    progress.empty()
-    status.empty()
-    log_box.empty()
 
     if not all_rows:
         return pd.DataFrame()
@@ -647,19 +630,63 @@ def tab_ejecutar():
             st.warning("⚠ Primero sube un archivo Excel.")
             return
 
-        with st.spinner("Ejecutando optimización OR-Tools…"):
-            result = run_all(
-                df,
-                st.session_state.get('capacidades', DEFAULT_CAPACIDADES),
-                st.session_state.get('config',      DEFAULT_CONFIG),
-            )
+        GLOBAL_TIMEOUT = 600  # 10 minutos máximo total
 
-        if result.empty:
+        result_holder = [None]
+        error_holder  = [None]
+
+        def _run():
+            try:
+                result_holder[0] = run_all(
+                    df,
+                    st.session_state.get('capacidades', DEFAULT_CAPACIDADES),
+                    st.session_state.get('config',      DEFAULT_CONFIG),
+                )
+            except Exception as e:
+                error_holder[0] = str(e)
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+
+        spinner_msgs = [
+            "Agrupando por COLOR_A…",
+            "Resolviendo subproblemas…",
+            "Optimizando lotes…",
+            "Casi listo…",
+        ]
+        start = time.time()
+        msg_idx = 0
+        progress_bar = st.progress(0)
+        status_msg   = st.empty()
+
+        while t.is_alive():
+            elapsed = time.time() - start
+            if elapsed > GLOBAL_TIMEOUT:
+                st.error("⏱ Tiempo límite global alcanzado (10 min). Reduce el número de filas o aumenta el timeout por lote.")
+                break
+            pct = min(int(elapsed / GLOBAL_TIMEOUT * 100), 95)
+            progress_bar.progress(pct)
+            status_msg.markdown(
+                f"<small>⚙ {spinner_msgs[msg_idx % len(spinner_msgs)]} — <b>{int(elapsed)}s</b> transcurridos</small>",
+                unsafe_allow_html=True
+            )
+            msg_idx += 1
+            time.sleep(2)
+            t.join(timeout=0)
+
+        progress_bar.empty()
+        status_msg.empty()
+
+        if error_holder[0]:
+            st.error(f"Error en el solver: {error_holder[0]}")
+        elif result_holder[0] is None or (hasattr(result_holder[0], 'empty') and result_holder[0].empty):
             st.warning("No se generaron lotes. Revisa parámetros y datos.")
         else:
+            result = result_holder[0]
             st.session_state['resultado'] = result
             n_lotes = result['LOTE_ID'].nunique()
-            st.success(f"✅ Completado: **{n_lotes} lotes** generados con **{len(result)} registros**. Ve a la pestaña **Resultados**.")
+            elapsed = round(time.time() - start, 1)
+            st.success(f"✅ Completado en {elapsed}s: **{n_lotes} lotes** generados con **{len(result)} registros**. Ve a **Resultados**.")
 
 # ─── TAB 5: RESULTADOS ──────────────────────────────────────────────────────────
 def tab_resultados():
