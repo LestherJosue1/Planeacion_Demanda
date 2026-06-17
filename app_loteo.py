@@ -533,6 +533,7 @@ def _build_reports(result, df_original, capacidades):
     # Colab: MIX, LNK, LBS_BASE, LBS_ASIGNADAS, LBS_SCRAP, BALANCE, ESTADO
     lnk_col = next((c for c in ['LNK','SKU','CUT-TICKET'] if c in df_original.columns), None)
     if lnk_col:
+        # LBS_BASE = libras originales del cut (antes de lotear)
         lnk_base = (df_original.groupby(lnk_col)
                     .agg(LBS_BASE=('LBS_C','sum'))
                     .reset_index())
@@ -540,7 +541,9 @@ def _build_reports(result, df_original, capacidades):
         lnk_meta = df_original[[lnk_col,'MIX']].drop_duplicates(subset=[lnk_col])
 
         if lnk_col in result.columns:
-            lnk_asig = (result.groupby(lnk_col)
+            # Deduplicar por índice original para evitar doble conteo entre categorías
+            result_dedup = result.drop_duplicates(subset=[lnk_col, 'ANCHO', 'LBS_C'])
+            lnk_asig = (result_dedup.groupby(lnk_col)
                         .agg(LBS_ASIGNADAS=('LBS_C','sum'))
                         .reset_index())
             lnk_comp = lnk_base.merge(lnk_asig, on=lnk_col, how='left').fillna(0)
@@ -621,12 +624,15 @@ def run_all(df, capacidades, config):
     solver_timeout = to_float(config.get('SOLVER_TIMEOUT', 5))
     active_caps    = [c for c in capacidades if c.get('ACTIVO', True)]
 
-    all_rows  = []
+    all_rows         = []
+    usados_global    = set()   # índices ya loteados — evita que un ítem entre en 2 categorías
 
     for idx, cap in enumerate(active_caps):
         cat = cap['CATEGORIA']
 
-        lotes, grupo = run_loteador(df, cap, max_items, solver_timeout)
+        # Pasar df sin los índices ya usados en categorías anteriores
+        df_disponible = df[~df.index.isin(usados_global)].copy()
+        lotes, grupo = run_loteador(df_disponible, cap, max_items, solver_timeout)
 
         for lid, indices, suma in lotes:
             anchos_lote = set()
@@ -647,6 +653,7 @@ def run_all(df, capacidades, config):
                 row['CANT_ANCHOS']     = cant
                 row['TIPO_LOTE_ANCHO'] = tipo_lote
                 all_rows.append(row)
+                usados_global.add(i)   # marcar como usado globalmente
 
     if not all_rows:
         return pd.DataFrame(), {}
@@ -700,20 +707,20 @@ def sidebar():
                 else:
                     st.warning("Escribe un nombre")
 
-        # Descarga del perfil seleccionado como JSON
         with col_d:
-            if sel != "(ninguno)" and sel in profiles:
-                profile_json = json.dumps(profiles[sel], indent=2, default=str).encode()
-                st.download_button(
-                    "⬇ JSON",
-                    data=profile_json,
-                    file_name=f"perfil_{sel}.json",
-                    mime="application/json",
-                    use_container_width=True,
-                    key="dl_profile",
-                )
-            else:
-                st.button("⬇ JSON", disabled=True, use_container_width=True, key="dl_profile_disabled")
+            st.write("")   # spacer
+
+        # Descarga del perfil — siempre fuera de columnas para evitar conflictos de key
+        if sel != "(ninguno)" and sel in profiles:
+            profile_json = json.dumps(profiles[sel], indent=2, default=str).encode()
+            st.download_button(
+                label="⬇ Descargar perfil JSON",
+                data=profile_json,
+                file_name=f"perfil_{sel}.json",
+                mime="application/json",
+                use_container_width=True,
+                key=f"dl_profile_{sel}",
+            )
 
         if names:
             st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
