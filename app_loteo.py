@@ -207,13 +207,13 @@ def _parse_set(x):
     return set(str(x).split("-"))
 
 def _solver_params(timeout):
-    """OR-Tools SAT parameters — compatibles con Streamlit Cloud (1 worker)."""
-    p = cp_model.SatParameters()
-    p.max_time_in_seconds = float(timeout)
-    p.num_search_workers  = 1   # Streamlit Cloud: 1 CPU, mas de 1 causa OOM
-    p.cp_model_presolve   = True
-    p.log_search_progress = False
-    return p
+    """Retorna dict de parametros — se aplican directamente al solver.parameters."""
+    return {
+        "max_time_in_seconds": float(timeout),
+        "num_search_workers":  1,
+        "cp_model_presolve":   True,
+        "log_search_progress": False,
+    }
 
 def _prefilter(grupo, min_lbs, max_lbs, max_items):
     """
@@ -267,7 +267,10 @@ def _solve_one_group(grupo, idxs_disp, usados, min_lbs, max_lbs, max_anchos, max
     model.Maximize(lbs_expr)
 
     solver = cp_model.CpSolver()
-    solver.parameters.CopyFrom(solver_params)
+    solver.parameters.max_time_in_seconds = solver_params["max_time_in_seconds"]
+    solver.parameters.num_search_workers  = solver_params["num_search_workers"]
+    solver.parameters.cp_model_presolve   = solver_params["cp_model_presolve"]
+    solver.parameters.log_search_progress = solver_params["log_search_progress"]
     status = solver.Solve(model)
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
