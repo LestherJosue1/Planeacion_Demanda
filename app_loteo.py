@@ -759,7 +759,7 @@ def tab_capacidades():
         maxv        = c[3].number_input("", value=to_int(cap.get('MAXIMO',1100)),  key=f"cmax_{i}", step=100, min_value=1, label_visibility="collapsed")
         lotes       = c[4].number_input("", value=to_int(cap.get('LOTES',5)),      key=f"cl_{i}",  step=1,   min_value=1, label_visibility="collapsed")
         semanas     = c[5].number_input("", value=to_float(cap.get('SEMANAS',4.0)), key=f"cs_{i}",  step=0.5, min_value=0.5, format="%.1f", label_visibility="collapsed")
-        cap_calc    = lotes * DIAS_SEMANA * semanas * maxv
+        cap_calc    = round(lotes * DIAS_SEMANA * semanas * maxv)
         c[6].markdown(f"<div style='padding-top:6px'><span class='badge badge-blue'>{cap_calc:,}</span></div>", unsafe_allow_html=True)
         min_ancho   = c[7].number_input("", value=to_int(cap.get('MIN_ANCHO',1)),  key=f"cma_{i}", step=1,   min_value=1, label_visibility="collapsed")
         max_ancho   = c[8].number_input("", value=to_int(cap.get('MAX_ANCHO',4)),  key=f"cmxa_{i}",step=1,   min_value=1, label_visibility="collapsed")
