@@ -198,6 +198,19 @@ def build_join_from_data(df_raw):
     df['MIX']       = df['MIX'].str.upper().str.strip()
     df['MIX_ANCHOS']= df['ANCHO'].astype(str)
 
+    # Preservar columnas extra para reportes (LNK, TONO, CONSUMO_C, STYLE, BD)
+    for col_orig, col_dest in [('BD','LNK'), ('LNK','LNK'), ('TONO','TONO'),
+                                ('CONSUMO_C','CONSUMO_C'), ('STYLE','STYLE'),
+                                ('PLANTA_COSTURA','PLANTA'), ('PRIORIDAD','PRIORIDAD')]:
+        if col_orig in df.columns and col_dest not in df.columns:
+            df[col_dest] = df[col_orig]
+        elif col_orig in df.columns:
+            df[col_dest] = df[col_orig]
+
+    # LNK_PRIORIDAD = LNK|PRIORIDAD para trazabilidad
+    if 'LNK' in df.columns and 'PRIORIDAD' in df.columns:
+        df['LNK_PRIORIDAD'] = df['LNK'].astype(str) + '|' + df['PRIORIDAD'].astype(str)
+
     df = df.dropna(subset=['LBS_C','ANCHO','COLOR_A','ESTILO_C']).reset_index(drop=True)
     return df
 
@@ -387,7 +400,11 @@ def _build_reports(result, df_original, capacidades):
     det['BLOQUE']          = det.get('PRIORIDAD', '')  # en data no hay BLOQUE separado
     det['APLICA_REGLA']    = 'NONE'
     det['PRIORIDAD_USADA'] = det['CATEGORIA'].map(cat_max)
-    det['DOCENAS']         = (det['LBS_ASIGNADAS'] / det.get('CONSUMO_C', pd.Series(1, index=det.index)).replace(0, 1)).round(2) if 'CONSUMO_C' in det.columns else 0
+    if 'CONSUMO_C' in det.columns:
+        det['DOCENAS'] = (det['LBS_ASIGNADAS'] / det['CONSUMO_C'].replace(0, float('nan'))).round(2)
+        det['DOCENAS'] = det['DOCENAS'].fillna(0)
+    else:
+        det['DOCENAS'] = 0
     det['LBS_EXTRA_SOBRE_ORDEN'] = 0
 
     det_cols = [c for c in [
@@ -637,7 +654,8 @@ def run_all(df, capacidades, config):
     result = pd.DataFrame(all_rows)
     show   = ['CATEGORIA','LOTE_ID','COLOR_A','ESTILO_C','ANCHO','LBS_C',
               'TOTAL_LOTE','PCT_CARGA_REAL','SET_ANCHOS_LOTE','CANT_ANCHOS',
-              'TIPO_LOTE_ANCHO','MIX','TIPO_TEJIDO','PCT_CARGA','PRIORIDAD','COLOR_R','FAMILIA']
+              'TIPO_LOTE_ANCHO','MIX','TIPO_TEJIDO','PCT_CARGA','PRIORIDAD','COLOR_R','FAMILIA',
+              'LNK','LNK_PRIORIDAD','TONO','CONSUMO_C','STYLE']
     show   = [c for c in show if c in result.columns]
     result = result[show].sort_values(['CATEGORIA','LOTE_ID']).reset_index(drop=True)
 
@@ -683,16 +701,19 @@ def sidebar():
                     st.warning("Escribe un nombre")
 
         # Descarga del perfil seleccionado como JSON
-        if sel != "(ninguno)" and sel in profiles:
-            profile_json = json.dumps(profiles[sel], indent=2, default=str).encode()
-            with col_d:
+        with col_d:
+            if sel != "(ninguno)" and sel in profiles:
+                profile_json = json.dumps(profiles[sel], indent=2, default=str).encode()
                 st.download_button(
                     "⬇ JSON",
                     data=profile_json,
                     file_name=f"perfil_{sel}.json",
                     mime="application/json",
                     use_container_width=True,
+                    key="dl_profile",
                 )
+            else:
+                st.button("⬇ JSON", disabled=True, use_container_width=True, key="dl_profile_disabled")
 
         if names:
             st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
@@ -907,12 +928,15 @@ def tab_ejecutar():
         result_holder = [None, {}]
         error_holder  = [None]
 
+        caps_actuales = st.session_state.get('capacidades', DEFAULT_CAPACIDADES)
+        st.session_state['caps_usadas'] = caps_actuales
+
         def _run():
             try:
                 res, reps = run_all(
                     df,
-                    st.session_state.get('capacidades', DEFAULT_CAPACIDADES),
-                    st.session_state.get('config',      DEFAULT_CONFIG),
+                    caps_actuales,
+                    st.session_state.get('config', DEFAULT_CONFIG),
                 )
                 result_holder[0] = res
                 result_holder[1] = reps
@@ -1121,7 +1145,7 @@ def main():
     st.markdown("""
     <div class="logo-header">
       <div style="font-size:18px;font-weight:800;color:white;letter-spacing:0.5px;">🏭 Loteador Óptimo de Tintorería</div>
-      <div style="font-size:9px;color:#cce4ff;letter-spacing:2px;text-transform:uppercase;margin-top:3px;">Grupo Elcatex · Optimización OR-Tools · Honduras 🇭🇳</div>
+      <div style="font-size:9px;color:#cce4ff;letter-spacing:2px;text-transform:uppercase;margin-top:3px;">Grupo Elcatex · Planeacion de la Demanda · Honduras 🇭🇳</div>
     </div>
     """, unsafe_allow_html=True)
 
