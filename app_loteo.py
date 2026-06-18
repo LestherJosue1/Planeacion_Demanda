@@ -75,13 +75,13 @@ PROFILES_FILE = "elcatex_profiles.json"
 DIAS_SEMANA   = 7
 
 DEFAULT_CAPACIDADES = [
-    {"CATEGORIA":"A-4000","MINIMO":3900,"MAXIMO":4000,"LOTES":5, "SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":4,"CTDMAXANCHOS":4,"MIX":"DYE",   "TIPO_TEJIDO":"FLEECE","ACTIVO":True},
-    {"CATEGORIA":"B-3300","MINIMO":3000,"MAXIMO":3300,"LOTES":6, "SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":4,"CTDMAXANCHOS":4,"MIX":"DYE",   "TIPO_TEJIDO":"TODOS", "ACTIVO":True},
-    {"CATEGORIA":"C-2600","MINIMO":2500,"MAXIMO":2600,"LOTES":29,"SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":4,"CTDMAXANCHOS":3,"MIX":"DYE",   "TIPO_TEJIDO":"TODOS", "ACTIVO":True},
-    {"CATEGORIA":"D-2200","MINIMO":2000,"MAXIMO":2200,"LOTES":17,"SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":4,"CTDMAXANCHOS":3,"MIX":"DYE",   "TIPO_TEJIDO":"TODOS", "ACTIVO":True},
-    {"CATEGORIA":"E-1100","MINIMO":1000,"MAXIMO":1100,"LOTES":25,"SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":4,"CTDMAXANCHOS":2,"MIX":"DYE",   "TIPO_TEJIDO":"TODOS", "ACTIVO":True},
-    {"CATEGORIA":"F-2200","MINIMO":2000,"MAXIMO":2200,"LOTES":21,"SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":4,"CTDMAXANCHOS":3,"MIX":"BLEACH","TIPO_TEJIDO":"TODOS", "ACTIVO":True},
-    {"CATEGORIA":"G-1100","MINIMO":1000,"MAXIMO":1100,"LOTES":4, "SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":4,"CTDMAXANCHOS":2,"MIX":"BLEACH","TIPO_TEJIDO":"TODOS", "ACTIVO":True},
+    {"CATEGORIA":"A-4000","MINIMO":3900,"MAXIMO":4000,"LOTES":5, "SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":6,"CTDMAXANCHOS":4,"MIX":"DYE",   "TIPO_TEJIDO":"FLEECE","ACTIVO":True},
+    {"CATEGORIA":"B-3300","MINIMO":3000,"MAXIMO":3300,"LOTES":6, "SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":6,"CTDMAXANCHOS":4,"MIX":"DYE",   "TIPO_TEJIDO":"TODOS", "ACTIVO":True},
+    {"CATEGORIA":"C-2600","MINIMO":2500,"MAXIMO":2600,"LOTES":29,"SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":6,"CTDMAXANCHOS":3,"MIX":"DYE",   "TIPO_TEJIDO":"TODOS", "ACTIVO":True},
+    {"CATEGORIA":"D-2200","MINIMO":2000,"MAXIMO":2200,"LOTES":17,"SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":6,"CTDMAXANCHOS":3,"MIX":"DYE",   "TIPO_TEJIDO":"TODOS", "ACTIVO":True},
+    {"CATEGORIA":"E-1100","MINIMO":1000,"MAXIMO":1100,"LOTES":25,"SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":6,"CTDMAXANCHOS":2,"MIX":"DYE",   "TIPO_TEJIDO":"TODOS", "ACTIVO":True},
+    {"CATEGORIA":"F-2200","MINIMO":2000,"MAXIMO":2200,"LOTES":21,"SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":6,"CTDMAXANCHOS":3,"MIX":"BLEACH","TIPO_TEJIDO":"TODOS", "ACTIVO":True},
+    {"CATEGORIA":"G-1100","MINIMO":1000,"MAXIMO":1100,"LOTES":4, "SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":6,"CTDMAXANCHOS":2,"MIX":"BLEACH","TIPO_TEJIDO":"TODOS", "ACTIVO":True},
 ]
 
 DEFAULT_CONFIG = {
@@ -364,13 +364,24 @@ def run_loteador(df_cat, cap, max_items, solver_timeout,
         allowed_pairs.add((p, p))
 
     def can_mix_priorities(existing_prios, new_prio):
-        """¿Puede new_prio entrar al lote con las prioridades existentes?"""
+        """¿Puede new_prio entrar al lote con las prioridades existentes?
+        DUE/PAST DUE pueden completarse con AHEAD si no alcanzan solos.
+        La lógica sigue la tabla COMBINACIONES_PRIORIDAD.
+        Si no hay pares configurados, usa lógica permisiva (mismo bloque o bloque adyacente).
+        """
         np = str(new_prio).upper().strip()
         for ep in existing_prios:
-            ep = str(ep).upper().strip()
-            if ep == np:
+            ep_s = str(ep).upper().strip()
+            if ep_s == np:
                 continue
-            if (ep, np) not in allowed_pairs:
+            # Si hay pares configurados, usarlos
+            if allowed_pairs and (ep_s, np) not in allowed_pairs:
+                # Excepción: DUE/PAST DUE siempre pueden mezclarse con AHEAD
+                due_group = {'DUE','PAST DUE','VENCIDOS'}
+                if ep_s in due_group and np == 'AHEAD':
+                    continue
+                if np in due_group and ep_s == 'AHEAD':
+                    continue
                 return False
         return True
 
@@ -970,37 +981,48 @@ def _aplicar_restricciones(df, cap, rest_ancho, rest_color, rest_familia):
 def run_all(df, capacidades, config, rest_ancho=None, rest_color=None, rest_familia=None):
     max_items      = to_int(config.get('MAX_ITEMS', 8))
     solver_timeout = to_float(config.get('SOLVER_TIMEOUT', 5))
-    active_caps = [c for c in capacidades if c.get('ACTIVO', True)]
+    # Orden: mayor MAXIMO primero (A-4000 → B-3300 → C-2600 → D-2200 → E-1100)
+    active_caps = sorted(
+        [c for c in capacidades if c.get('ACTIVO', True)],
+        key=lambda c: -to_int(c.get('MAXIMO', 0))
+    )
 
-    all_rows              = []
-    lbs_restantes_global  = {}  # {orig_idx -> lbs_aun_disponibles} — clave del control de excesos
+    all_rows = []
+    combos   = config.get('COMBINACION_PRIORIDAD',
+                           [['VENCIDOS','AHEAD'],['AHEAD','AHEAD2'],['AHEAD2','OTROS']])
 
-    for idx, cap in enumerate(active_caps):
+    # Pool independiente por categoría — cada cat ve LBS_BASE completas del LNK
+    # El reporte de excedentes usa el mínimo remanente entre todas las categorías
+    lbs_por_cat = {}   # {cat -> {orig_idx -> lbs_restantes}}
+
+    for cap in active_caps:
         cat = cap['CATEGORIA']
 
-        # Filtrar filas cuyo remanente ya es 0 (completamente asignadas)
-        filas_con_remanente = [i for i in df.index
-                               if lbs_restantes_global.get(i, float(df.loc[i,'LBS_C'])) > 0]
-        df_disponible = df.loc[filas_con_remanente].copy()
+        # Pool fresco para esta categoría — parte desde LBS_BASE de cada fila
+        lbs_cat = {i: float(df.loc[i, 'LBS_C']) for i in df.index}
+        if 'PCT_CARGA' in df.columns:
+            for i in df.index:
+                lbs_cat[i] = round(float(df.loc[i, 'LBS_C']) *
+                                   float(df.loc[i, 'PCT_CARGA']), 1)
+        lbs_por_cat[cat] = lbs_cat
 
         # Aplicar restricciones de ancho/color/familia
         df_disponible = _aplicar_restricciones(
-            df_disponible, cap,
+            df, cap,
             rest_ancho   or [],
             rest_color   or [],
             rest_familia or [],
         )
-        combos = config.get('COMBINACION_PRIORIDAD',
-                            [['VENCIDOS','AHEAD'],['AHEAD','AHEAD2'],['AHEAD2','OTROS']])
+
         lotes, grupo = run_loteador(
             df_disponible, cap, max_items, solver_timeout,
-            lbs_restantes_global=lbs_restantes_global,
+            lbs_restantes_global=lbs_cat,
             combos_prioridad=combos,
         )
 
         for lote in lotes:
             lid        = lote['lid']
-            lote_rows  = lote['rows']   # [(orig_idx, lbs_tomadas)]
+            lote_rows  = lote['rows']
             suma       = lote['total']
             set_anchos = lote['set_anchos']
             cant       = lote['cant']
@@ -1031,7 +1053,16 @@ def run_all(df, capacidades, config, rest_ancho=None, rest_color=None, rest_fami
     show   = [c for c in show if c in result.columns]
     result = result[show].sort_values(['CATEGORIA','LOTE_ID']).reset_index(drop=True)
 
-    reports = _build_reports(result, df, capacidades, lbs_restantes_global)
+    # Para EXCEDENTES: calcular cuánto queda de cada LNK sumando lo asignado en TODAS las cats
+    lbs_asig_total = result.groupby(result.index)['LBS_C'].sum() if not result.empty else {}
+    lbs_global_restante = {}
+    for i in df.index:
+        base = float(df.loc[i,'LBS_C'])
+        asig = float(result[result.index == i]['LBS_C'].sum()) if i in result.index else 0.0
+        lbs_global_restante[i] = max(0.0, base - asig)
+
+    # Pero result no tiene orig_idx — usar LNK para calcular restante
+    reports = _build_reports(result, df, capacidades, None)
     return result, reports
 
 # ─── SIDEBAR ────────────────────────────────────────────────────────────────────
