@@ -158,7 +158,7 @@ class Configuracion:
     beam_width:      int   = 3      # cuántos seeds probar por bloque
 
     # Diferencia de anchos dentro de un lote
-    min_diff: float = 0.0   # diferencia mínima entre anchos distintos (0 = sin límite)
+    min_diff: float = 1.0   # diferencia mínima entre anchos distintos en pulgadas
     max_diff: float = 6.0   # diferencia máxima entre anchos distintos en pulgadas
 
     # Split
@@ -228,7 +228,7 @@ class Configuracion:
             max_items               = _int("MAX_ITEMS", 8),
             solver_timeout          = _float("SOLVER_TIMEOUT", 5.0),
             beam_width              = _int("BEAM_WIDTH", 3),
-            min_diff                = _float("MIN_DIFF", 0.0),
+            min_diff                = _float("MIN_DIFF", 1.0),
             max_diff                = _float("MAX_DIFF", 6.0),
             split_min_default       = _float("SPLIT_MIN_LBS_DEFAULT", 100.0),
             split_min_ancho18       = _float("SPLIT_MIN_LBS_ANCHO18", 250.0),
@@ -1454,7 +1454,7 @@ def build_dataframe(df_raw: pd.DataFrame) -> Tuple[Optional[pd.DataFrame], Optio
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
-    df["PCT_CARGA"] = pd.to_numeric(df.get("PCT_CARGA", 1.0), errors="coerce").fillna(1.0)
+    df["PCT_CARGA"] = pd.to_numeric(df["PCT_CARGA"] if "PCT_CARGA" in df.columns else 1.0, errors="coerce").fillna(1.0)
     df["MIX"]       = df["MIX"].astype(str).str.upper().str.strip()
 
     # Columnas opcionales con defaults
