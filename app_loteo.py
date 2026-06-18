@@ -427,13 +427,43 @@ if st.session_state["resultado"] is not None:
         st.plotly_chart(fig6, use_container_width=True)
 
     st.header("7. Descarga del Excel completo")
+    if "excel_bytes" not in st.session_state:
+        st.session_state["excel_bytes"] = None
+
     if st.button("📦 Generar Excel completo"):
-        out_path = "/tmp/RESULTADOS_LOTES.xlsx"
-        with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
-            for name, df in all_reports.items():
-                df.to_excel(writer, index=False, sheet_name=name[:31])
-        format_workbook(out_path, font_name="Cambria", font_size=8)
-        with open(out_path, "rb") as f:
-            st.download_button("⬇️ Descargar RESULTADOS_LOTES.xlsx", data=f.read(),
-                                file_name="RESULTADOS_LOTES.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        try:
+            out_path = "/tmp/RESULTADOS_LOTES.xlsx"
+            with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
+                used_names = set()
+                for name, df in all_reports.items():
+                    sheet_name = name[:31]
+                    # evitar nombres de hoja duplicados tras el truncado a 31 caracteres
+                    base = sheet_name
+                    i = 1
+                    while sheet_name in used_names:
+                        suffix = f"_{i}"
+                        sheet_name = base[:31 - len(suffix)] + suffix
+                        i += 1
+                    used_names.add(sheet_name)
+                    df_safe = df.copy()
+                    # openpyxl no acepta tz-aware datetimes ni objetos no serializables; forzamos a str si hace falta
+                    for col in df_safe.columns:
+                        if df_safe[col].dtype == object:
+                            df_safe[col] = df_safe[col].apply(lambda v: v if (v is None or isinstance(v, (str, int, float, bool))) else str(v))
+                    df_safe.to_excel(writer, index=False, sheet_name=sheet_name)
+            format_workbook(out_path, font_name="Cambria", font_size=8)
+            with open(out_path, "rb") as f:
+                st.session_state["excel_bytes"] = f.read()
+            st.success("✅ Excel generado. Usa el botón de abajo para descargarlo.")
+        except Exception as e:
+            st.session_state["excel_bytes"] = None
+            st.error(f"❌ Error generando el Excel: {e}")
+
+    if st.session_state["excel_bytes"] is not None:
+        st.download_button(
+            "⬇️ Descargar RESULTADOS_LOTES.xlsx",
+            data=st.session_state["excel_bytes"],
+            file_name="RESULTADOS_LOTES.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_excel_final",
+        )
