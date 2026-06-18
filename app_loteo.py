@@ -314,18 +314,24 @@ def _solve_one_group(grupo, idxs_disp, usados, min_lbs, max_lbs, max_anchos, max
     return _solve_one_group_no_tela(grupo, idxs_disp, usados, min_lbs, max_lbs, max_anchos, max_items, solver_params)
 
 
-def run_loteador(df_cat, cap, max_items, solver_timeout):
+def run_loteador(df_cat, cap, max_items, solver_timeout, lbs_restantes_global=None):
     """
-    Loteador con SPLIT de cortes grandes.
-    Cuando un corte tiene mas LBS de las que caben en un lote, se divide en partes
-    proporcionales — igual que el Colab. Esto es lo que permite llegar al 90%+.
+    Loteador con SPLIT de cortes grandes y control LBS_RESTANTES global.
+
+    lbs_restantes_global: dict {orig_idx -> lbs_disponibles_aun}
+    Garantiza que el total asignado por LNK nunca exceda LBS_BASE,
+    incluso cuando el mismo LNK pasa por múltiples categorías.
     """
+    import math
     min_lbs    = to_int(cap['MINIMO'])
     max_lbs    = to_int(cap['MAXIMO'])
     mix_tipo   = str(cap['MIX']).upper()
     tipo_tej   = str(cap['TIPO_TEJIDO']).upper()
     max_anchos = to_int(cap['CTDMAXANCHOS'], 3)
     max_lotes  = round(to_int(cap.get('LOTES', 9999)) * DIAS_SEMANA * to_float(cap.get('SEMANAS', 4)))
+
+    if lbs_restantes_global is None:
+        lbs_restantes_global = {}
 
     # Filtros de categoría
     grupo_cat = df_cat[df_cat['MIX'].str.upper() == mix_tipo].copy()
@@ -336,80 +342,62 @@ def run_loteador(df_cat, cap, max_items, solver_timeout):
 
     grupo_cat['ANCHOS_SET'] = grupo_cat['ANCHO'].apply(lambda x: {str(x)})
 
-    # ── APLICAR PCT_CARGA: ajustar LBS efectivas ──────────────────────────────
-    # Si un producto tiene PCT_CARGA=0.7 se planifica al 70% de sus LBS
-    # pero se identifica en la categoría original
+    # PCT_CARGA
     if 'PCT_CARGA' in grupo_cat.columns:
-        grupo_cat['LBS_EFECTIVA'] = (grupo_cat['LBS_C'] * grupo_cat['PCT_CARGA'].clip(0.01, 1.0)).round(0)
+        grupo_cat['LBS_EFECTIVA'] = (grupo_cat['LBS_C'] * grupo_cat['PCT_CARGA'].clip(0.01, 1.0)).round(1)
     else:
         grupo_cat['LBS_EFECTIVA'] = grupo_cat['LBS_C']
 
-    # ── SPLIT: expandir filas con LBS > max_lbs en fragmentos ─────────────────
-    #
-    # REGLA DE SPLIT MÍNIMO:
-    #   SPLIT_MIN = 500 lbs.
-    #   Un LNK solo se parte si sus LBS_EFECTIVA >= 2 * SPLIT_MIN (>=1000 lbs).
-    #   Esto garantiza que después de tomar el primer fragmento (>=SPLIT_MIN),
-    #   el remanente también sea >= SPLIT_MIN — sin canibalizar la demanda.
-    #
-    #   Ejemplos:
-    #     700 lbs  → NO se parte (quedarían solo 200 lbs, menor que SPLIT_MIN)
-    #     1,000 lbs → SÍ: 2 partes de 500 lbs cada una
-    #     1,200 lbs → SÍ: parte_1=600, parte_2=600  (o parte_1=500, remanente=700)
-    #     2,600 lbs → SÍ: 5 partes de 520 lbs (todas >= SPLIT_MIN)
-    #     4,500 lbs → SÍ: 2 partes de 2,250 lbs (dentro del rango min-max de categoría)
-    #
+    # ── SPLIT con LBS_RESTANTES ───────────────────────────────────────────────
+    # Para cada fila, la LBS disponible es lbs_restantes_global[orig_idx].
+    # Si nunca se ha asignado nada de ese índice, LBS disponible = LBS_EFECTIVA.
+    # El split se calcula solo sobre la porción restante disponible.
     SPLIT_MIN = 500.0
 
     expanded_rows = []
     for orig_idx, row in grupo_cat.iterrows():
-        lbs_total = float(row['LBS_EFECTIVA'])
-        if lbs_total <= 0:
-            continue
+        lbs_original = float(row['LBS_EFECTIVA'])
 
-        # ¿Vale la pena partir este LNK?
-        if lbs_total < 2 * SPLIT_MIN:
-            # LNK demasiado pequeño para partir sin canibalizar — entra entero
-            new_row = row.copy()
-            new_row['LBS_C']       = round(lbs_total, 1)
-            new_row['LBS_EFECTIVA']= round(lbs_total, 1)
-            new_row['_orig_idx']   = orig_idx
-            new_row['_part']       = 0
-            new_row['_split']      = False
+        # ¿Cuánto queda disponible de este corte?
+        if orig_idx not in lbs_restantes_global:
+            lbs_restantes_global[orig_idx] = lbs_original
+        lbs_disponible = lbs_restantes_global[orig_idx]
+
+        if lbs_disponible <= 0:
+            continue  # ya completamente asignado en categorías anteriores
+
+        # ¿Vale la pena partir? Solo si lo disponible >= 2*SPLIT_MIN
+        if lbs_disponible < 2 * SPLIT_MIN:
+            # Entra entero (o lo que quede)
+            new_row            = row.copy()
+            new_row['LBS_C']   = round(lbs_disponible, 1)
+            new_row['_orig_idx'] = orig_idx
+            new_row['_part']   = 0
+            new_row['_split']  = False
             expanded_rows.append(new_row)
             continue
 
-        # Calcular cuántas partes caben, respetando SPLIT_MIN en cada parte
-        # Queremos partes lo más grandes posible (cercanas a max_lbs) pero >= SPLIT_MIN
-        if lbs_total <= max_lbs:
-            # Cabe entero en un lote — no partir
+        # Split: cuántos fragmentos de esta categoría caben en lo disponible
+        if lbs_disponible <= max_lbs:
             n_parts = 1
         else:
-            # Partir: cuántos lotes necesita?
-            # Tomamos ceil(lbs_total / max_lbs) pero verificando que cada parte >= SPLIT_MIN
-            import math
-            n_parts = math.ceil(lbs_total / max_lbs)
-            lbs_per_part_test = lbs_total / n_parts
-            # Si alguna parte quedaría < SPLIT_MIN, ajustar
-            while lbs_per_part_test < SPLIT_MIN and n_parts > 1:
+            n_parts = math.ceil(lbs_disponible / max_lbs)
+            per = lbs_disponible / n_parts
+            while per < SPLIT_MIN and n_parts > 1:
                 n_parts -= 1
-                lbs_per_part_test = lbs_total / n_parts
+                per = lbs_disponible / n_parts
 
-        lbs_per_part = round(lbs_total / n_parts, 1)
-        # Ajustar última parte para que el total cuadre exacto
+        lbs_per_part = round(lbs_disponible / n_parts, 1)
         for part in range(n_parts):
             new_row = row.copy()
             if part == n_parts - 1:
-                # Última parte toma el remanente exacto
-                asignado = round(lbs_per_part * part, 1)
-                lbs_esta_parte = round(lbs_total - asignado, 1)
+                lbs_esta = round(lbs_disponible - lbs_per_part * part, 1)
             else:
-                lbs_esta_parte = lbs_per_part
-            new_row['LBS_C']       = lbs_esta_parte
-            new_row['LBS_EFECTIVA']= lbs_esta_parte
-            new_row['_orig_idx']   = orig_idx
-            new_row['_part']       = part
-            new_row['_split']      = n_parts > 1
+                lbs_esta = lbs_per_part
+            new_row['LBS_C']     = lbs_esta
+            new_row['_orig_idx'] = orig_idx
+            new_row['_part']     = part
+            new_row['_split']    = n_parts > 1
             expanded_rows.append(new_row)
 
     if not expanded_rows:
@@ -499,7 +487,7 @@ def _format_excel_output(writer):
             from openpyxl.utils import get_column_letter as gcl
             ws.auto_filter.ref = f"A1:{gcl(ws.max_column)}{ws.max_row}"
 
-def _build_reports(result, df_original, capacidades):
+def _build_reports(result, df_original, capacidades, lbs_restantes_global=None):
     """Construye todas las hojas del reporte Excel — estructura identica al output de Colab."""
 
     cat_max = {c['CATEGORIA']: to_int(c['MAXIMO']) for c in capacidades}
@@ -571,25 +559,31 @@ def _build_reports(result, df_original, capacidades):
                  'COMBO_ANCHOS','STYLE_CRITICO','CANT_REGLAS_APLICADAS','UPGRADE_CATEGORIA','TIPO_LOTE']
     resumen = resumen[[c for c in col_order if c in resumen.columns]]
 
-    # ── EXCEDENTES — igual columnas que Colab ────────────────────────────────
+    # ── EXCEDENTES — filas con LBS_RESTANTES > 0 usando el tracking global ─────
     # Colab: LNK, TELA.CUERPO, COLOR, TONO, MIX, PRIORIDAD, BLOQUE,
     #        ANCHO.F.C, ANCHO.F.M, TOTAL, LBS_RESTANTES, LBS_SCRAP
-    assigned_idx = set(result.index)
-    exc_raw = df_original[~df_original.index.isin(assigned_idx)].copy()
-    if not exc_raw.empty:
-        exc_raw = exc_raw.rename(columns={
-            'COLOR_A':   'COLOR',
-            'ESTILO_C':  'TELA.CUERPO',
-            'LBS_C':     'LBS_RESTANTES',
-            'ANCHO':     'ANCHO.F.C',
-        })
-        exc_raw['LBS_SCRAP'] = 0
-        exc_raw['ANCHO.F.M'] = 0
-        exc_raw['BLOQUE']    = exc_raw.get('PRIORIDAD', '')
-        exc_raw['TOTAL']     = exc_raw['LBS_RESTANTES']
-        exc_cols = [c for c in ['LNK','TELA.CUERPO','COLOR','TONO','MIX','PRIORIDAD',
-                                 'BLOQUE','ANCHO.F.C','ANCHO.F.M','TOTAL','LBS_RESTANTES','LBS_SCRAP'] if c in exc_raw.columns]
-        excedentes = exc_raw[exc_cols]
+    exc_rows = []
+    lbs_rest = lbs_restantes_global or {}
+    for orig_idx, row in df_original.iterrows():
+        lbs_base = float(row.get('LBS_C', 0))
+        restante = lbs_rest.get(orig_idx, lbs_base)   # si nunca se tocó, todo es restante
+        if restante > 0.01:
+            exc_rows.append({
+                'LNK':          row.get('LNK', ''),
+                'TELA.CUERPO':  row.get('ESTILO_C', ''),
+                'COLOR':        row.get('COLOR_A', ''),
+                'TONO':         row.get('TONO', ''),
+                'MIX':          row.get('MIX', ''),
+                'PRIORIDAD':    row.get('PRIORIDAD', ''),
+                'BLOQUE':       row.get('PRIORIDAD', ''),
+                'ANCHO.F.C':    row.get('ANCHO', 0),
+                'ANCHO.F.M':    0,
+                'TOTAL':        lbs_base,
+                'LBS_RESTANTES':round(restante, 1),
+                'LBS_SCRAP':    0,
+            })
+    if exc_rows:
+        excedentes = pd.DataFrame(exc_rows).sort_values('LBS_RESTANTES', ascending=False).reset_index(drop=True)
     else:
         excedentes = pd.DataFrame(columns=['LNK','TELA.CUERPO','COLOR','TONO','MIX',
                                             'PRIORIDAD','BLOQUE','ANCHO.F.C','ANCHO.F.M',
@@ -852,22 +846,28 @@ def run_all(df, capacidades, config, rest_ancho=None, rest_color=None, rest_fami
     solver_timeout = to_float(config.get('SOLVER_TIMEOUT', 5))
     active_caps    = [c for c in capacidades if c.get('ACTIVO', True)]
 
-    all_rows         = []
-    usados_global    = set()   # índices ya loteados — evita que un ítem entre en 2 categorías
+    all_rows              = []
+    lbs_restantes_global  = {}  # {orig_idx -> lbs_aun_disponibles} — clave del control de excesos
 
     for idx, cap in enumerate(active_caps):
         cat = cap['CATEGORIA']
 
-        # Pasar df sin los índices ya usados en categorías anteriores
-        df_disponible = df[~df.index.isin(usados_global)].copy()
-        # Aplicar restricciones: filtrar filas que NO pueden ir en esta categoría
+        # Filtrar filas cuyo remanente ya es 0 (completamente asignadas)
+        filas_con_remanente = [i for i in df.index
+                               if lbs_restantes_global.get(i, float(df.loc[i,'LBS_C'])) > 0]
+        df_disponible = df.loc[filas_con_remanente].copy()
+
+        # Aplicar restricciones de ancho/color/familia
         df_disponible = _aplicar_restricciones(
             df_disponible, cap,
             rest_ancho   or [],
             rest_color   or [],
             rest_familia or [],
         )
-        lotes, grupo = run_loteador(df_disponible, cap, max_items, solver_timeout)
+        lotes, grupo = run_loteador(
+            df_disponible, cap, max_items, solver_timeout,
+            lbs_restantes_global=lbs_restantes_global,
+        )
 
         for lid, indices, suma in lotes:
             anchos_lote = set()
@@ -879,7 +879,18 @@ def run_all(df, capacidades, config, rest_ancho=None, rest_color=None, rest_fami
             tipo_lote  = 'PURO' if cant == 1 else ('MIX_CONTROLADO' if cant <= 3 else 'MIX_ALTO')
 
             for i in indices:
-                row = grupo.loc[i].copy()
+                row         = grupo.loc[i].copy()
+                orig_idx    = int(row.get('_orig_idx', i))
+                lbs_asig    = float(row['LBS_C'])
+
+                # Descontar del remanente global — NUNCA exceder LBS_BASE
+                prev_rest   = lbs_restantes_global.get(orig_idx, float(df.loc[orig_idx,'LBS_C']) if orig_idx in df.index else lbs_asig)
+                lbs_asig    = min(lbs_asig, prev_rest)          # cap al remanente
+                if lbs_asig <= 0:
+                    continue
+                lbs_restantes_global[orig_idx] = max(0.0, prev_rest - lbs_asig)
+
+                row['LBS_C']           = round(lbs_asig, 1)
                 row['CATEGORIA']       = cat
                 row['LOTE_ID']         = f"{cat}-L{lid:03d}"
                 row['TOTAL_LOTE']      = round(suma, 1)
@@ -888,7 +899,6 @@ def run_all(df, capacidades, config, rest_ancho=None, rest_color=None, rest_fami
                 row['CANT_ANCHOS']     = cant
                 row['TIPO_LOTE_ANCHO'] = tipo_lote
                 all_rows.append(row)
-                usados_global.add(i)   # marcar como usado globalmente
 
     if not all_rows:
         return pd.DataFrame(), {}
@@ -901,7 +911,7 @@ def run_all(df, capacidades, config, rest_ancho=None, rest_color=None, rest_fami
     show   = [c for c in show if c in result.columns]
     result = result[show].sort_values(['CATEGORIA','LOTE_ID']).reset_index(drop=True)
 
-    reports = _build_reports(result, df, capacidades)
+    reports = _build_reports(result, df, capacidades, lbs_restantes_global)
     return result, reports
 
 # ─── SIDEBAR ────────────────────────────────────────────────────────────────────
