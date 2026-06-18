@@ -793,13 +793,8 @@ def score_lote(lote: Lote, cfg: Configuracion, lbs_restantes: dict) -> float:
     if abs(maximo - 1100.0) < 1e-6:
         pena_1100 = cfg.w_1100_strict * max(0, n_anchos - 1)
 
-    # Priority score — preferir lotes con prioridades altas
-    from ..core.priority_engine import prio_rank
-    prios_en_lote = []
-    for row_result in lote.rows:
-        # Se adjunta en _build_lote
-        pass
-    prio_score = 0.0  # Se calcula con prios_en_lote si están disponibles
+    # Priority score — prio_rank ya está definido globalmente en este archivo
+    prio_score = 0.0
 
     # Completion score — cuántos LNKs quedan con LBS_RESTANTES ≈ 0 tras este lote
     completion = 0.0
