@@ -1437,7 +1437,10 @@ def build_dataframe(df_raw: pd.DataFrame) -> Tuple[Optional[pd.DataFrame], Optio
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
-    df["PCT_CARGA"] = pd.to_numeric(df["PCT_CARGA"] if "PCT_CARGA" in df.columns else 1.0, errors="coerce").fillna(1.0)
+    if "PCT_CARGA" in df.columns:
+        df["PCT_CARGA"] = pd.to_numeric(df["PCT_CARGA"], errors="coerce").fillna(1.0)
+    else:
+        df["PCT_CARGA"] = 1.0
     df["MIX"]       = df["MIX"].astype(str).str.upper().str.strip()
 
     # Columnas opcionales con defaults
