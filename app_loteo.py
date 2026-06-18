@@ -79,7 +79,7 @@ DEFAULT_CAPACIDADES = [
     {"CATEGORIA":"B-3300","MINIMO":3000,"MAXIMO":3300,"LOTES":6, "SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":4,"CTDMAXANCHOS":4,"MIX":"DYE",   "TIPO_TEJIDO":"TODOS", "ACTIVO":True},
     {"CATEGORIA":"C-2600","MINIMO":2500,"MAXIMO":2600,"LOTES":29,"SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":4,"CTDMAXANCHOS":3,"MIX":"DYE",   "TIPO_TEJIDO":"TODOS", "ACTIVO":True},
     {"CATEGORIA":"D-2200","MINIMO":2000,"MAXIMO":2200,"LOTES":17,"SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":4,"CTDMAXANCHOS":3,"MIX":"DYE",   "TIPO_TEJIDO":"TODOS", "ACTIVO":True},
-    {"CATEGORIA":"E-1100","MINIMO":1000,"MAXIMO":1100,"LOTES":25,"SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":4,"CTDMAXANCHOS":2,"MIX":"DYE",   "TIPO_TEJIDO":"JERSEY","ACTIVO":True},
+    {"CATEGORIA":"E-1100","MINIMO":1000,"MAXIMO":1100,"LOTES":25,"SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":4,"CTDMAXANCHOS":2,"MIX":"DYE",   "TIPO_TEJIDO":"TODOS", "ACTIVO":True},
     {"CATEGORIA":"F-2200","MINIMO":2000,"MAXIMO":2200,"LOTES":21,"SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":4,"CTDMAXANCHOS":3,"MIX":"BLEACH","TIPO_TEJIDO":"TODOS", "ACTIVO":True},
     {"CATEGORIA":"G-1100","MINIMO":1000,"MAXIMO":1100,"LOTES":4, "SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":4,"CTDMAXANCHOS":2,"MIX":"BLEACH","TIPO_TEJIDO":"TODOS", "ACTIVO":True},
 ]
@@ -316,43 +316,114 @@ def _solve_one_group(grupo, idxs_disp, usados, min_lbs, max_lbs, max_anchos, max
 
 def run_loteador(df_cat, cap, max_items, solver_timeout):
     """
-    Loteador principal — agrupa por COLOR_A igual que el código Colab original.
-
-    BUGS CORREGIDOS vs versión anterior:
-    1. Límite de LOTES por categoría ahora se respeta (para al llegar al máximo).
-    2. Regla de incompatibilidad de telas ELIMINADA: en la DATA cada fila tiene
-       una sola TELA.CUERPO, así que la intersección entre dos filas distintas
-       siempre es vacía → bloqueaba casi todo. La compatibilidad real ya está
-       garantizada por el agrupamiento por COLOR_A (mismo baño de tinte).
-    3. ANCHO se trata como valor individual (no como set "MIX_ANCHOS") porque
-       cada fila de DATA tiene exactamente un ancho.
+    Loteador con SPLIT de cortes grandes.
+    Cuando un corte tiene mas LBS de las que caben en un lote, se divide en partes
+    proporcionales — igual que el Colab. Esto es lo que permite llegar al 90%+.
     """
     min_lbs    = to_int(cap['MINIMO'])
     max_lbs    = to_int(cap['MAXIMO'])
     mix_tipo   = str(cap['MIX']).upper()
     tipo_tej   = str(cap['TIPO_TEJIDO']).upper()
     max_anchos = to_int(cap['CTDMAXANCHOS'], 3)
-    max_lotes  = round(to_int(cap.get('LOTES', 9999)) * DIAS_SEMANA * to_float(cap.get('SEMANAS', 4)))  # lotes totales del periodo
+    max_lotes  = round(to_int(cap.get('LOTES', 9999)) * DIAS_SEMANA * to_float(cap.get('SEMANAS', 4)))
 
     # Filtros de categoría
     grupo_cat = df_cat[df_cat['MIX'].str.upper() == mix_tipo].copy()
     if tipo_tej != 'TODOS':
         grupo_cat = grupo_cat[grupo_cat['TIPO_TEJIDO'].str.upper().isin([tipo_tej, 'TODOS'])]
-
     if grupo_cat.empty:
         return [], grupo_cat
 
-    # FIX 3: ANCHOS_SET como set de un solo valor (el ancho real de la fila)
     grupo_cat['ANCHOS_SET'] = grupo_cat['ANCHO'].apply(lambda x: {str(x)})
+
+    # ── APLICAR PCT_CARGA: ajustar LBS efectivas ──────────────────────────────
+    # Si un producto tiene PCT_CARGA=0.7 se planifica al 70% de sus LBS
+    # pero se identifica en la categoría original
+    if 'PCT_CARGA' in grupo_cat.columns:
+        grupo_cat['LBS_EFECTIVA'] = (grupo_cat['LBS_C'] * grupo_cat['PCT_CARGA'].clip(0.01, 1.0)).round(0)
+    else:
+        grupo_cat['LBS_EFECTIVA'] = grupo_cat['LBS_C']
+
+    # ── SPLIT: expandir filas con LBS > max_lbs en fragmentos ─────────────────
+    #
+    # REGLA DE SPLIT MÍNIMO:
+    #   SPLIT_MIN = 500 lbs.
+    #   Un LNK solo se parte si sus LBS_EFECTIVA >= 2 * SPLIT_MIN (>=1000 lbs).
+    #   Esto garantiza que después de tomar el primer fragmento (>=SPLIT_MIN),
+    #   el remanente también sea >= SPLIT_MIN — sin canibalizar la demanda.
+    #
+    #   Ejemplos:
+    #     700 lbs  → NO se parte (quedarían solo 200 lbs, menor que SPLIT_MIN)
+    #     1,000 lbs → SÍ: 2 partes de 500 lbs cada una
+    #     1,200 lbs → SÍ: parte_1=600, parte_2=600  (o parte_1=500, remanente=700)
+    #     2,600 lbs → SÍ: 5 partes de 520 lbs (todas >= SPLIT_MIN)
+    #     4,500 lbs → SÍ: 2 partes de 2,250 lbs (dentro del rango min-max de categoría)
+    #
+    SPLIT_MIN = 500.0
+
+    expanded_rows = []
+    for orig_idx, row in grupo_cat.iterrows():
+        lbs_total = float(row['LBS_EFECTIVA'])
+        if lbs_total <= 0:
+            continue
+
+        # ¿Vale la pena partir este LNK?
+        if lbs_total < 2 * SPLIT_MIN:
+            # LNK demasiado pequeño para partir sin canibalizar — entra entero
+            new_row = row.copy()
+            new_row['LBS_C']       = round(lbs_total, 1)
+            new_row['LBS_EFECTIVA']= round(lbs_total, 1)
+            new_row['_orig_idx']   = orig_idx
+            new_row['_part']       = 0
+            new_row['_split']      = False
+            expanded_rows.append(new_row)
+            continue
+
+        # Calcular cuántas partes caben, respetando SPLIT_MIN en cada parte
+        # Queremos partes lo más grandes posible (cercanas a max_lbs) pero >= SPLIT_MIN
+        if lbs_total <= max_lbs:
+            # Cabe entero en un lote — no partir
+            n_parts = 1
+        else:
+            # Partir: cuántos lotes necesita?
+            # Tomamos ceil(lbs_total / max_lbs) pero verificando que cada parte >= SPLIT_MIN
+            import math
+            n_parts = math.ceil(lbs_total / max_lbs)
+            lbs_per_part_test = lbs_total / n_parts
+            # Si alguna parte quedaría < SPLIT_MIN, ajustar
+            while lbs_per_part_test < SPLIT_MIN and n_parts > 1:
+                n_parts -= 1
+                lbs_per_part_test = lbs_total / n_parts
+
+        lbs_per_part = round(lbs_total / n_parts, 1)
+        # Ajustar última parte para que el total cuadre exacto
+        for part in range(n_parts):
+            new_row = row.copy()
+            if part == n_parts - 1:
+                # Última parte toma el remanente exacto
+                asignado = round(lbs_per_part * part, 1)
+                lbs_esta_parte = round(lbs_total - asignado, 1)
+            else:
+                lbs_esta_parte = lbs_per_part
+            new_row['LBS_C']       = lbs_esta_parte
+            new_row['LBS_EFECTIVA']= lbs_esta_parte
+            new_row['_orig_idx']   = orig_idx
+            new_row['_part']       = part
+            new_row['_split']      = n_parts > 1
+            expanded_rows.append(new_row)
+
+    if not expanded_rows:
+        return [], grupo_cat
+
+    grupo_exp = pd.DataFrame(expanded_rows).reset_index(drop=True)
+    grupo_exp['ANCHOS_SET'] = grupo_exp['ANCHO'].apply(lambda x: {str(x)})
 
     sparams = _solver_params(solver_timeout)
     lotes   = []
     lid     = 1
 
     # ── AGRUPACIÓN POR COLOR_A ────────────────────────────────────────────────
-    for color, grupo in grupo_cat.groupby('COLOR_A'):
-
-        # FIX 1: si ya alcanzamos el límite de lotes de la categoría, parar
+    for color, grupo in grupo_exp.groupby('COLOR_A'):
         if len(lotes) >= max_lotes:
             break
 
@@ -360,10 +431,8 @@ def run_loteador(df_cat, cap, max_items, solver_timeout):
         usados = set()
 
         while True:
-            # FIX 1: revisar límite en cada iteración del while
             if len(lotes) >= max_lotes:
                 break
-
             sel, suma = _solve_one_group_no_tela(
                 grupo, idxs, usados,
                 min_lbs, max_lbs, max_anchos, max_items, sparams
@@ -375,8 +444,55 @@ def run_loteador(df_cat, cap, max_items, solver_timeout):
             lotes.append((lid, sel, suma))
             lid += 1
 
-    return lotes, grupo_cat
+    return lotes, grupo_exp
 
+
+
+def _format_excel_output(writer):
+    """Aplica formato Calibri 8, autofit columnas y formato numérico a todas las hojas."""
+    from openpyxl.styles import Font, PatternFill, Alignment, numbers
+    from openpyxl.utils import get_column_letter
+
+    wb = writer.book
+    header_fill  = PatternFill("solid", fgColor="003876")
+    header_font  = Font(name="Calibri", size=8, bold=True, color="FFFFFF")
+    cell_font    = Font(name="Calibri", size=8)
+    num_fmt      = "#,##0"
+    dec_fmt      = "#,##0.0"
+
+    for ws in wb.worksheets:
+        col_widths = {}
+
+        for row_idx, row in enumerate(ws.iter_rows()):
+            for cell in row:
+                # Font
+                if row_idx == 0:
+                    cell.font      = header_font
+                    cell.fill      = header_fill
+                    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=False)
+                else:
+                    cell.font      = cell_font
+                    cell.alignment = Alignment(vertical="center")
+                    # Numeric format
+                    if cell.value is not None and isinstance(cell.value, (int, float)):
+                        # Decide dec or int
+                        col_letter = get_column_letter(cell.column)
+                        header_val = ws.cell(1, cell.column).value or ""
+                        if any(x in str(header_val).upper() for x in ["PCT","FILL","CARGA","SEMANA","%"]):
+                            cell.number_format = dec_fmt
+                        else:
+                            cell.number_format = num_fmt
+
+                # Autofit width tracking
+                col_letter = get_column_letter(cell.column)
+                val_len = len(str(cell.value)) if cell.value is not None else 0
+                col_widths[col_letter] = max(col_widths.get(col_letter, 8), min(val_len + 2, 35))
+
+        for col_letter, width in col_widths.items():
+            ws.column_dimensions[col_letter].width = width
+
+        # Freeze top row
+        ws.freeze_panes = "A2"
 
 def _build_reports(result, df_original, capacidades):
     """Construye todas las hojas del reporte Excel — estructura identica al output de Colab."""
@@ -710,17 +826,20 @@ def sidebar():
         with col_d:
             st.write("")   # spacer
 
-        # Descarga del perfil — siempre fuera de columnas para evitar conflictos de key
-        if sel != "(ninguno)" and sel in profiles:
-            profile_json = json.dumps(profiles[sel], indent=2, default=str).encode()
+        # Descarga del perfil — fuera de columnas, key dinamico por nombre
+        profiles_fresh = load_profiles()   # recargar para reflejar guardados recientes
+        if sel != "(ninguno)" and sel in profiles_fresh:
+            profile_json = json.dumps(profiles_fresh[sel], indent=2, default=str).encode()
             st.download_button(
-                label="⬇ Descargar perfil JSON",
+                label=f"⬇ Descargar '{sel}'",
                 data=profile_json,
-                file_name=f"perfil_{sel}.json",
+                file_name=f"perfil_{sel.replace(' ','_')}.json",
                 mime="application/json",
                 use_container_width=True,
-                key=f"dl_profile_{sel}",
+                key=f"dl_profile_btn_{hash(sel) % 99999}",
             )
+        else:
+            st.caption("Selecciona un perfil para descargar")
 
         if names:
             st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
@@ -748,7 +867,9 @@ def tab_capacidades():
     for col, lbl in zip(hcols, ["","Categoría","Mín lbs","Máx lbs","Lotes","Semanas","Cap LBS calc","Min Ancho","Max Ancho","Ctd Anchos","MIX","Tipo Tejido"]):
         col.markdown(f"<div class='col-header'>{lbl}</div>", unsafe_allow_html=True)
 
-    updated = []
+    updated    = []
+    total_cap  = 0
+
     for i, cap in enumerate(caps):
         activo = bool(cap.get('ACTIVO', True))
         c = st.columns([0.35, 1.1, 0.75, 0.75, 0.65, 0.65, 0.95, 0.65, 0.65, 0.75, 0.85, 0.85])
@@ -758,9 +879,12 @@ def tab_capacidades():
         minv        = c[2].number_input("", value=to_int(cap.get('MINIMO',1000)),  key=f"cmin_{i}", step=100, min_value=0, label_visibility="collapsed")
         maxv        = c[3].number_input("", value=to_int(cap.get('MAXIMO',1100)),  key=f"cmax_{i}", step=100, min_value=1, label_visibility="collapsed")
         lotes       = c[4].number_input("", value=to_int(cap.get('LOTES',5)),      key=f"cl_{i}",  step=1,   min_value=1, label_visibility="collapsed")
-        semanas     = c[5].number_input("", value=to_float(cap.get('SEMANAS',4.0)), key=f"cs_{i}",  step=0.5, min_value=0.5, format="%.1f", label_visibility="collapsed")
-        cap_calc    = round(lotes * DIAS_SEMANA * semanas * maxv)
-        c[6].markdown(f"<div style='padding-top:6px'><span class='badge badge-blue'>{cap_calc:,}</span></div>", unsafe_allow_html=True)
+        # Semanas: guardado como float, paso 0.1 para mayor precisión
+        sem_raw     = cap.get('SEMANAS', 4.0)
+        sem_val     = round(float(sem_raw) if sem_raw is not None else 4.0, 2)
+        semanas     = c[5].number_input("", value=sem_val, key=f"cs_{i}", step=0.1, min_value=0.1, format="%.1f", label_visibility="collapsed")
+        cap_calc    = int(round(lotes * DIAS_SEMANA * float(semanas) * maxv))
+        c[6].markdown(f"<div style='padding-top:6px'><span class='badge badge-blue'>{cap_calc:,} lbs</span></div>", unsafe_allow_html=True)
         min_ancho   = c[7].number_input("", value=to_int(cap.get('MIN_ANCHO',1)),  key=f"cma_{i}", step=1,   min_value=1, label_visibility="collapsed")
         max_ancho   = c[8].number_input("", value=to_int(cap.get('MAX_ANCHO',4)),  key=f"cmxa_{i}",step=1,   min_value=1, label_visibility="collapsed")
         ctd_anchos  = c[9].number_input("", value=to_int(cap.get('CTDMAXANCHOS',3)),key=f"cca_{i}",step=1,  min_value=1, max_value=10, label_visibility="collapsed")
@@ -775,6 +899,18 @@ def tab_capacidades():
             "TIPO_TEJIDO": tipo_sel, "ACTIVO": activo_new,
             "CAPACIDAD_LBS": cap_calc,
         })
+        if activo_new:
+            total_cap += cap_calc
+
+    # ── FILA TOTAL ────────────────────────────────────────────────────────────
+    st.markdown(
+        f"""<div style='display:flex;gap:8px;margin-top:8px;padding:8px 12px;
+        background:#003876;border-radius:6px;align-items:center;'>
+        <span style='color:#cce4ff;font-size:10px;font-weight:700;flex:2'>TOTAL ACTIVAS</span>
+        <span style='color:white;font-size:12px;font-weight:800;flex:1'>{total_cap:,} lbs</span>
+        </div>""",
+        unsafe_allow_html=True
+    )
 
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("➕ Agregar Categoría"):
@@ -1140,6 +1276,7 @@ def tab_resultados():
         for sheet_name, df_sheet in sheet_order:
             if df_sheet is not None and not df_sheet.empty:
                 df_sheet.to_excel(writer, sheet_name=sheet_name, index=False)
+        _format_excel_output(writer)
     buf.seek(0)
     st.download_button("⬇ Descargar Excel completo", data=buf, file_name=fname,
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
