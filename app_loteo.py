@@ -68,8 +68,6 @@ class Categoria:
     lotes_dia:    int = 5
     semanas:      float = 4.0
     ctd_max_anchos: int = 3
-    min_ancho_val: float = 0.0  # valor mínimo de ancho en pulgadas (0 = sin límite)
-    max_ancho_val: float = 0.0  # valor máximo de ancho en pulgadas (0 = sin límite)
     activo:       bool = True
 
     @property
@@ -90,8 +88,6 @@ class Categoria:
             "LOTES":         self.lotes_dia,
             "SEMANAS":       self.semanas,
             "CTDMAXANCHOS":  self.ctd_max_anchos,
-            "MIN_ANCHO_VAL": self.min_ancho_val,
-            "MAX_ANCHO_VAL": self.max_ancho_val,
             "ACTIVO":        self.activo,
             "CAPACIDAD_LBS": self.capacidad_lbs,
         }
@@ -107,8 +103,6 @@ class Categoria:
             lotes_dia      = int(d.get("LOTES", 5)),
             semanas        = float(d.get("SEMANAS", 4.0)),
             ctd_max_anchos = int(d.get("CTDMAXANCHOS", 3)),
-            min_ancho_val  = float(d.get("MIN_ANCHO_VAL", 0.0)),
-            max_ancho_val  = float(d.get("MAX_ANCHO_VAL", 0.0)),
             activo         = bool(d.get("ACTIVO", True)),
         )
 
@@ -904,15 +898,6 @@ def intentar_lote_para_rango(
     if not anchos_validos(seed_anchos, max_anchos):
         return None
 
-    # Chequeo de valor de ancho del seed vs límites de la categoría (en pulgadas)
-    min_ancho_cat = float(rango.get("MIN_ANCHO_VAL", 0.0))
-    max_ancho_cat = float(rango.get("MAX_ANCHO_VAL", 0.0))
-    if seed_anchos and min_ancho_cat > 0:
-        if min(seed_anchos) < min_ancho_cat:
-            return None
-    if seed_anchos and max_ancho_cat > 0:
-        if max(seed_anchos) > max_ancho_cat:
-            return None
 
     # max_unique_widths si hay objetivo de anchos estricto
     if max_unique_widths is not None and len(seed_anchos) > max_unique_widths:
@@ -1055,8 +1040,6 @@ def _build_ranges(categorias: List[Categoria]) -> List[dict]:
             "MIX":           c.mix.upper(),
             "TIPO_TEJIDO":   c.tipo_tejido.upper(),
             "CTDMAXANCHOS":  c.ctd_max_anchos,
-            "MIN_ANCHO_VAL": c.min_ancho_val,
-            "MAX_ANCHO_VAL": c.max_ancho_val,
             "RANGO_ID":      c.rango_id,
         })
     return sorted(ranges, key=lambda r: -float(r["MAXIMO"]))
@@ -2020,36 +2003,34 @@ def tab_capacidades():
     tipo_opts   = ["TODOS", "FLEECE", "JERSEY"]
     mix_opts    = ["DYE", "BLEACH"]
 
-    hcols = st.columns([0.3, 0.9, 0.6, 0.6, 0.5, 0.5, 0.8, 0.55, 0.55, 0.55, 0.7, 0.75])
-    for col, lbl in zip(hcols, ["","Categoria","Min lbs","Max lbs","Lotes","Semanas","Cap LBS","Ctd Anchos","MinAncho","MaxAncho","MIX","Tipo Tejido"]):
+    hcols = st.columns([0.35, 1.0, 0.7, 0.7, 0.6, 0.6, 0.9, 0.7, 0.85, 0.85])
+    for col, lbl in zip(hcols, ["","Categoria","Min lbs","Max lbs","Lotes","Semanas","Cap LBS","Ctd Anchos","MIX","Tipo Tejido"]):
         col.markdown(f"<div class='col-hdr'>{lbl}</div>", unsafe_allow_html=True)
 
     updated   = []
     total_cap = 0
 
     for i, c in enumerate(cats):
-        cols = st.columns([0.3, 0.9, 0.6, 0.6, 0.5, 0.5, 0.8, 0.55, 0.55, 0.55, 0.7, 0.75])
-        activo   = cols[0].checkbox("", value=c.activo,        key=f"ca_{i}")
-        nombre   = cols[1].text_input("",  value=c.nombre,     key=f"cn_{i}", label_visibility="collapsed")
-        minv     = cols[2].number_input("", value=int(c.minimo),   key=f"cmin_{i}", step=100, min_value=0, label_visibility="collapsed")
-        maxv     = cols[3].number_input("", value=int(c.maximo),   key=f"cmax_{i}", step=100, min_value=1, label_visibility="collapsed")
-        lotes    = cols[4].number_input("", value=c.lotes_dia,    key=f"cl_{i}",  step=1,   min_value=1, label_visibility="collapsed")
-        sem_v    = round(float(c.semanas), 1)
-        semanas  = cols[5].number_input("", value=sem_v, key=f"cs_{i}", step=0.1, min_value=0.1, format="%.1f", label_visibility="collapsed")
-        cap_c    = int(round(lotes * 7 * float(semanas) * maxv))
+        cols = st.columns([0.35, 1.0, 0.7, 0.7, 0.6, 0.6, 0.9, 0.7, 0.85, 0.85])
+        activo  = cols[0].checkbox("", value=c.activo,       key=f"ca_{i}")
+        nombre  = cols[1].text_input("",  value=c.nombre,    key=f"cn_{i}", label_visibility="collapsed")
+        minv    = cols[2].number_input("", value=int(c.minimo),  key=f"cmin_{i}", step=100, min_value=0, label_visibility="collapsed")
+        maxv    = cols[3].number_input("", value=int(c.maximo),  key=f"cmax_{i}", step=100, min_value=1, label_visibility="collapsed")
+        lotes   = cols[4].number_input("", value=c.lotes_dia,   key=f"cl_{i}",  step=1,   min_value=1, label_visibility="collapsed")
+        sem_v   = round(float(c.semanas), 1)
+        semanas = cols[5].number_input("", value=sem_v, key=f"cs_{i}", step=0.1, min_value=0.1, format="%.1f", label_visibility="collapsed")
+        cap_c   = int(round(lotes * 7 * float(semanas) * maxv))
         cols[6].markdown(f"<div style='padding-top:6px'><span class='badge-blue'>{cap_c:,}</span></div>", unsafe_allow_html=True)
-        ctd_anch = cols[7].number_input("", value=c.ctd_max_anchos, key=f"cca_{i}", step=1, min_value=1, max_value=10, label_visibility="collapsed")
-        min_av   = cols[8].number_input("", value=float(c.min_ancho_val), key=f"cmina_{i}", step=0.5, min_value=0.0, format="%.1f", label_visibility="collapsed", help="0 = sin límite")
-        max_av   = cols[9].number_input("", value=float(c.max_ancho_val), key=f"cmaxa_{i}", step=0.5, min_value=0.0, format="%.1f", label_visibility="collapsed", help="0 = sin límite")
-        mix_i    = mix_opts.index(c.mix) if c.mix in mix_opts else 0
-        mix_sel  = cols[10].selectbox("", mix_opts,  index=mix_i, key=f"cmix_{i}", label_visibility="collapsed")
-        tip_i    = tipo_opts.index(c.tipo_tejido) if c.tipo_tejido in tipo_opts else 0
-        tip_sel  = cols[11].selectbox("", tipo_opts, index=tip_i, key=f"ctj_{i}",  label_visibility="collapsed")
+        ctd_anch= cols[7].number_input("", value=c.ctd_max_anchos, key=f"cca_{i}", step=1, min_value=1, max_value=10, label_visibility="collapsed")
+        mix_i   = mix_opts.index(c.mix) if c.mix in mix_opts else 0
+        mix_sel = cols[8].selectbox("", mix_opts,  index=mix_i, key=f"cmix_{i}", label_visibility="collapsed")
+        tip_i   = tipo_opts.index(c.tipo_tejido) if c.tipo_tejido in tipo_opts else 0
+        tip_sel = cols[9].selectbox("", tipo_opts, index=tip_i, key=f"ctj_{i}",  label_visibility="collapsed")
 
         updated.append(Categoria(
             nombre=nombre, minimo=minv, maximo=maxv, mix=mix_sel,
             tipo_tejido=tip_sel, lotes_dia=lotes, semanas=semanas,
-            ctd_max_anchos=ctd_anch, min_ancho_val=min_av, max_ancho_val=max_av, activo=activo,
+            ctd_max_anchos=ctd_anch, activo=activo,
         ))
         if activo:
             total_cap += cap_c
@@ -2162,7 +2143,11 @@ def tab_restricciones():
 # ── TAB 3: CONFIGURACIÓN ──────────────────────────────────────────────────────
 def tab_config():
     st.markdown("### Configuración del Motor NV3")
-    cfg: Configuracion = st.session_state.get("config", DEFAULT_CONFIG)
+    _cfg_raw = st.session_state.get("config", DEFAULT_CONFIG)
+    # Migración: si el objeto no tiene min_diff/max_diff (versión anterior), usar defaults
+    if not hasattr(_cfg_raw, "min_diff"):
+        _cfg_raw = DEFAULT_CONFIG
+    cfg: Configuracion = _cfg_raw
 
     c1, c2, c3 = st.columns(3)
 
