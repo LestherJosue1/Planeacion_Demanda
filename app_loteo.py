@@ -491,8 +491,11 @@ def _format_excel_output(writer):
         for col_letter, width in col_widths.items():
             ws.column_dimensions[col_letter].width = width
 
-        # Freeze top row
+        # Freeze top row + AutoFilter
         ws.freeze_panes = "A2"
+        if ws.max_row > 1 and ws.max_column > 0:
+            from openpyxl.utils import get_column_letter as gcl
+            ws.auto_filter.ref = f"A1:{gcl(ws.max_column)}{ws.max_row}"
 
 def _build_reports(result, df_original, capacidades):
     """Construye todas las hojas del reporte Excel — estructura identica al output de Colab."""
@@ -657,9 +660,8 @@ def _build_reports(result, df_original, capacidades):
         lnk_meta = df_original[[lnk_col,'MIX']].drop_duplicates(subset=[lnk_col])
 
         if lnk_col in result.columns:
-            # Deduplicar por índice original para evitar doble conteo entre categorías
-            result_dedup = result.drop_duplicates(subset=[lnk_col, 'ANCHO', 'LBS_C'])
-            lnk_asig = (result_dedup.groupby(lnk_col)
+            # Sumar todas las filas asignadas por LNK (incluyendo splits)
+            lnk_asig = (result.groupby(lnk_col)
                         .agg(LBS_ASIGNADAS=('LBS_C','sum'))
                         .reset_index())
             lnk_comp = lnk_base.merge(lnk_asig, on=lnk_col, how='left').fillna(0)
