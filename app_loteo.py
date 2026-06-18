@@ -473,15 +473,17 @@ def _format_excel_output(writer):
                 else:
                     cell.font      = cell_font
                     cell.alignment = Alignment(vertical="center")
-                    # Numeric format
+                    # Numeric format + red for negatives
                     if cell.value is not None and isinstance(cell.value, (int, float)):
-                        # Decide dec or int
-                        col_letter = get_column_letter(cell.column)
                         header_val = ws.cell(1, cell.column).value or ""
-                        if any(x in str(header_val).upper() for x in ["PCT","FILL","CARGA","SEMANA","%"]):
-                            cell.number_format = dec_fmt
+                        is_pct = any(x in str(header_val).upper() for x in ["PCT","FILL","CARGA","SEMANA","%"])
+                        fmt = dec_fmt if is_pct else num_fmt
+                        # Red font for negative values
+                        if isinstance(cell.value, (int, float)) and cell.value < 0:
+                            cell.font = Font(name="Calibri", size=8, color="C00000")
+                            cell.number_format = fmt
                         else:
-                            cell.number_format = num_fmt
+                            cell.number_format = fmt
 
                 # Autofit width tracking
                 col_letter = get_column_letter(cell.column)
@@ -528,7 +530,7 @@ def _build_reports(result, df_original, capacidades):
 
     det_cols = [c for c in [
         'LOTE_ID','ANCHOS_LOTE','CATEGORIA','MIX','TELA.CUERPO','COLOR',
-        'TONO','LNK','PRIORIDAD','BLOQUE','ANCHO.F.C','CONSUMO_C',
+        'TONO','LNK_PRIORIDAD','LNK','PRIORIDAD','BLOQUE','ANCHO.F.C','CONSUMO_C',
         'FAMILIA','COLOR_R','STYLE','LBS_ASIGNADAS','LBS_EXTRA_SOBRE_ORDEN',
         'APLICA_REGLA','PRIORIDAD_USADA','DOCENAS','TIPO_TEJIDO','PCT_CARGA',
         'TOTAL_LOTE','PCT_CARGA_REAL','CANT_ANCHOS','TIPO_LOTE_ANCHO'
@@ -675,7 +677,8 @@ def _build_reports(result, df_original, capacidades):
         lnk_comp['ESTADO']    = lnk_comp['BALANCE'].apply(
             lambda b: 'COMPLETO' if abs(b) < 1 else ('PARCIAL' if b > 0 else 'EXCEDIDO'))
         lnk_comp = lnk_comp[['MIX', lnk_col, 'LBS_BASE','LBS_ASIGNADAS','LBS_SCRAP','BALANCE','ESTADO']]
-        lnk_comp = lnk_comp.sort_values(['MIX', lnk_col]).reset_index(drop=True)
+        # Ordenar por BALANCE desc (mayor pendiente primero)
+        lnk_comp = lnk_comp.sort_values('BALANCE', ascending=False).reset_index(drop=True)
     else:
         lnk_comp = pd.DataFrame(columns=['MIX','LNK','LBS_BASE','LBS_ASIGNADAS','LBS_SCRAP','BALANCE','ESTADO'])
 
@@ -737,7 +740,114 @@ def _build_reports(result, df_original, capacidades):
     }
 
 
-def run_all(df, capacidades, config):
+
+def _aplicar_restricciones(df, cap, rest_ancho, rest_color, rest_familia):
+    """
+    Filtra las filas del df que NO son elegibles para esta categoría según las reglas:
+
+    RESTRICCIONES_ANCHO:
+      Si un STYLE tiene LIMITE_ANCHO=18 y el producto tiene ANCHO <= 18,
+      solo puede ir en una categoría cuyo MAXIMO coincida con alguna PRIORIDAD_1/2/3
+      Y que además tenga el mismo MIX que el producto.
+      Si el MIX no coincide con ninguna categoría de esa prioridad, la restricción
+      NO aplica (el producto se asigna libremente por MIX).
+
+    RESTRICCIONES_COLOR:
+      Si COLOR_R coincide con un registro activo con PRIORIDAD_1 definido,
+      solo puede ir en categoría con ese MAXIMO.
+
+    RESTRICCIONES_FAMILIA:
+      Igual que COLOR pero por FAMILIA.
+    """
+    if df.empty:
+        return df
+
+    cat_maximo = to_int(cap['MAXIMO'])
+    cat_mix    = str(cap['MIX']).upper()
+    mask_ok    = pd.Series(True, index=df.index)
+
+    # ── RESTRICCIONES_ANCHO ───────────────────────────────────────────────────
+    for reg in rest_ancho:
+        if not reg.get('ACTIVO', True):
+            continue
+        style       = str(reg.get('STYLE', '')).strip().upper()
+        limite      = to_int(reg.get('LIMITE_ANCHO', 18))
+        prioridades = [to_int(reg.get(f'PRIORIDAD_{k}')) for k in [1,2,3]
+                       if reg.get(f'PRIORIDAD_{k}') is not None]
+        if not prioridades or 'STYLE' not in df.columns:
+            continue
+
+        # Filas afectadas: mismo STYLE y ANCHO <= limite
+        mask_style = (df['STYLE'].astype(str).str.upper().str.strip() == style) &                      (pd.to_numeric(df['ANCHO'], errors='coerce').fillna(999) <= limite)
+
+        if not mask_style.any():
+            continue
+
+        # ¿Esta categoría está permitida para este STYLE?
+        # Solo aplica si la categoría tiene el mismo MIX que el producto
+        # (restricción de ancho es para DYE; en BLEACH el style va libre)
+        # Verificar: ¿alguna prioridad coincide con cat_maximo y el MIX coincide?
+        cat_permitida = cat_maximo in prioridades
+
+        if not cat_permitida:
+            # Bloquear estas filas de esta categoría
+            # PERO solo si el MIX del producto coincide con el MIX de la categoría
+            # (Si el style es BLEACH y la restricción apunta solo a categorías DYE,
+            #  no bloquear — dejar que se asigne libremente por MIX)
+            if 'MIX' in df.columns:
+                # Bloquear solo filas cuyo MIX == cat_mix (same pipeline)
+                mask_bloquear = mask_style & (df['MIX'].str.upper() == cat_mix)
+            else:
+                mask_bloquear = mask_style
+            mask_ok = mask_ok & ~mask_bloquear
+
+    # ── RESTRICCIONES_COLOR ───────────────────────────────────────────────────
+    for reg in rest_color:
+        if not reg.get('ACTIVO', True):
+            continue
+        color_r     = str(reg.get('COLOR_R', '')).strip().upper()
+        prioridades = [to_int(reg.get(f'PRIORIDAD_{k}')) for k in [1,2,3]
+                       if reg.get(f'PRIORIDAD_{k}') is not None]
+        if not prioridades or 'COLOR_R' not in df.columns:
+            continue
+
+        mask_color = df['COLOR_R'].astype(str).str.upper().str.strip() == color_r
+        if not mask_color.any():
+            continue
+
+        cat_permitida = cat_maximo in prioridades
+        if not cat_permitida:
+            if 'MIX' in df.columns:
+                mask_bloquear = mask_color & (df['MIX'].str.upper() == cat_mix)
+            else:
+                mask_bloquear = mask_color
+            mask_ok = mask_ok & ~mask_bloquear
+
+    # ── RESTRICCIONES_FAMILIA ─────────────────────────────────────────────────
+    for reg in rest_familia:
+        if not reg.get('ACTIVO', True):
+            continue
+        familia     = str(reg.get('FAMILIA', '')).strip().upper()
+        prioridades = [to_int(reg.get(f'PRIORIDAD_{k}')) for k in [1,2,3,4]
+                       if reg.get(f'PRIORIDAD_{k}') is not None]
+        if not prioridades or 'FAMILIA' not in df.columns:
+            continue
+
+        mask_fam = df['FAMILIA'].astype(str).str.upper().str.strip() == familia
+        if not mask_fam.any():
+            continue
+
+        cat_permitida = cat_maximo in prioridades
+        if not cat_permitida:
+            if 'MIX' in df.columns:
+                mask_bloquear = mask_fam & (df['MIX'].str.upper() == cat_mix)
+            else:
+                mask_bloquear = mask_fam
+            mask_ok = mask_ok & ~mask_bloquear
+
+    return df[mask_ok].copy()
+
+def run_all(df, capacidades, config, rest_ancho=None, rest_color=None, rest_familia=None):
     max_items      = to_int(config.get('MAX_ITEMS', 8))
     solver_timeout = to_float(config.get('SOLVER_TIMEOUT', 5))
     active_caps    = [c for c in capacidades if c.get('ACTIVO', True)]
@@ -750,6 +860,13 @@ def run_all(df, capacidades, config):
 
         # Pasar df sin los índices ya usados en categorías anteriores
         df_disponible = df[~df.index.isin(usados_global)].copy()
+        # Aplicar restricciones: filtrar filas que NO pueden ir en esta categoría
+        df_disponible = _aplicar_restricciones(
+            df_disponible, cap,
+            rest_ancho   or [],
+            rest_color   or [],
+            rest_familia or [],
+        )
         lotes, grupo = run_loteador(df_disponible, cap, max_items, solver_timeout)
 
         for lid, indices, suma in lotes:
@@ -1082,6 +1199,9 @@ def tab_ejecutar():
                     df,
                     caps_actuales,
                     st.session_state.get('config', DEFAULT_CONFIG),
+                    rest_ancho   = st.session_state.get('rest_ancho',   DEFAULT_RESTRICCIONES_ANCHO),
+                    rest_color   = st.session_state.get('rest_color',   DEFAULT_RESTRICCIONES_COLOR),
+                    rest_familia = st.session_state.get('rest_familia', DEFAULT_RESTRICCIONES_FAMILIA),
                 )
                 result_holder[0] = res
                 result_holder[1] = reps
