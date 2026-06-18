@@ -75,13 +75,13 @@ PROFILES_FILE = "elcatex_profiles.json"
 DIAS_SEMANA   = 7
 
 DEFAULT_CAPACIDADES = [
-    {"CATEGORIA":"A-4000","MINIMO":3900,"MAXIMO":4000,"LOTES":5, "SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":6,"CTDMAXANCHOS":4,"MIX":"DYE",   "TIPO_TEJIDO":"FLEECE","ACTIVO":True},
-    {"CATEGORIA":"B-3300","MINIMO":3000,"MAXIMO":3300,"LOTES":6, "SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":6,"CTDMAXANCHOS":4,"MIX":"DYE",   "TIPO_TEJIDO":"TODOS", "ACTIVO":True},
-    {"CATEGORIA":"C-2600","MINIMO":2500,"MAXIMO":2600,"LOTES":29,"SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":6,"CTDMAXANCHOS":3,"MIX":"DYE",   "TIPO_TEJIDO":"TODOS", "ACTIVO":True},
-    {"CATEGORIA":"D-2200","MINIMO":2000,"MAXIMO":2200,"LOTES":17,"SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":6,"CTDMAXANCHOS":3,"MIX":"DYE",   "TIPO_TEJIDO":"TODOS", "ACTIVO":True},
-    {"CATEGORIA":"E-1100","MINIMO":1000,"MAXIMO":1100,"LOTES":25,"SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":6,"CTDMAXANCHOS":2,"MIX":"DYE",   "TIPO_TEJIDO":"TODOS", "ACTIVO":True},
-    {"CATEGORIA":"F-2200","MINIMO":2000,"MAXIMO":2200,"LOTES":21,"SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":6,"CTDMAXANCHOS":3,"MIX":"BLEACH","TIPO_TEJIDO":"TODOS", "ACTIVO":True},
-    {"CATEGORIA":"G-1100","MINIMO":1000,"MAXIMO":1100,"LOTES":4, "SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":6,"CTDMAXANCHOS":2,"MIX":"BLEACH","TIPO_TEJIDO":"TODOS", "ACTIVO":True},
+    {"CATEGORIA":"A-4000","MINIMO":3900,"MAXIMO":4000,"LOTES":5, "SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":4,"CTDMAXANCHOS":4,"MIX":"DYE",   "TIPO_TEJIDO":"FLEECE","ACTIVO":True},
+    {"CATEGORIA":"B-3300","MINIMO":3000,"MAXIMO":3300,"LOTES":6, "SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":4,"CTDMAXANCHOS":4,"MIX":"DYE",   "TIPO_TEJIDO":"TODOS", "ACTIVO":True},
+    {"CATEGORIA":"C-2600","MINIMO":2500,"MAXIMO":2600,"LOTES":29,"SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":4,"CTDMAXANCHOS":3,"MIX":"DYE",   "TIPO_TEJIDO":"TODOS", "ACTIVO":True},
+    {"CATEGORIA":"D-2200","MINIMO":2000,"MAXIMO":2200,"LOTES":17,"SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":4,"CTDMAXANCHOS":3,"MIX":"DYE",   "TIPO_TEJIDO":"TODOS", "ACTIVO":True},
+    {"CATEGORIA":"E-1100","MINIMO":1000,"MAXIMO":1100,"LOTES":25,"SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":4,"CTDMAXANCHOS":2,"MIX":"DYE",   "TIPO_TEJIDO":"TODOS", "ACTIVO":True},
+    {"CATEGORIA":"F-2200","MINIMO":2000,"MAXIMO":2200,"LOTES":21,"SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":4,"CTDMAXANCHOS":3,"MIX":"BLEACH","TIPO_TEJIDO":"TODOS", "ACTIVO":True},
+    {"CATEGORIA":"G-1100","MINIMO":1000,"MAXIMO":1100,"LOTES":4, "SEMANAS":4.0,"MIN_ANCHO":1,"MAX_ANCHO":4,"CTDMAXANCHOS":2,"MIX":"BLEACH","TIPO_TEJIDO":"TODOS", "ACTIVO":True},
 ]
 
 DEFAULT_CONFIG = {
@@ -336,8 +336,7 @@ def run_loteador(df_cat, cap, max_items, solver_timeout,
     mix_tipo       = str(cap['MIX']).upper()
     tipo_tej       = str(cap['TIPO_TEJIDO']).upper()
     max_anchos     = to_int(cap['CTDMAXANCHOS'], 3)
-    min_ancho_val  = to_float(cap.get('MIN_ANCHO', 0))
-    max_ancho_val  = to_float(cap.get('MAX_ANCHO', 999))
+    # MIN_ANCHO / MAX_ANCHO = cantidad de anchos distintos (no pulgadas) — se usa max_anchos = CTDMAXANCHOS
     max_lotes      = round(to_int(cap.get('LOTES', 9999)) * DIAS_SEMANA * to_float(cap.get('SEMANAS', 4)))
     SPLIT_MIN      = 500.0
 
@@ -408,14 +407,12 @@ def run_loteador(df_cat, cap, max_items, solver_timeout,
         return anchos
 
     def anchos_validos(anchos_set):
-        """¿Los anchos del lote cumplen MIN, MAX y cantidad?"""
+        """¿La cantidad de anchos distintos en el lote cumple el límite CTDMAXANCHOS?
+        MIN_ANCHO y MAX_ANCHO son cantidad de anchos distintos permitidos, NO valores en pulgadas.
+        """
         if not anchos_set:
             return True
-        vals = [float(a) for a in anchos_set]
-        if min(vals) < min_ancho_val and min_ancho_val > 0:
-            return False
-        if max(vals) > max_ancho_val and max_ancho_val < 999:
-            return False
+        # Solo validar CANTIDAD de anchos distintos
         if len(anchos_set) > max_anchos:
             return False
         return True
