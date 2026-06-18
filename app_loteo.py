@@ -314,26 +314,66 @@ def _solve_one_group(grupo, idxs_disp, usados, min_lbs, max_lbs, max_anchos, max
     return _solve_one_group_no_tela(grupo, idxs_disp, usados, min_lbs, max_lbs, max_anchos, max_items, solver_params)
 
 
-def run_loteador(df_cat, cap, max_items, solver_timeout, lbs_restantes_global=None):
+def run_loteador(df_cat, cap, max_items, solver_timeout,
+                  lbs_restantes_global=None, combos_prioridad=None):
     """
-    Loteador greedy — igual filosofía que el Colab:
-    - Agrupa por TONO+TELA+MIX (mismo baño de tinte)
-    - Dentro de cada grupo, seed = ítem con más LBS disponibles
-    - Llena el lote tomando min(LBS_RESTANTE, espacio_disponible)
-      — nunca crea partes pre-calculadas, toma exactamente lo que cabe
-    - SPLIT_MIN: no parte un LNK si el remanente quedaría < SPLIT_MIN
+    Motor greedy — reglas de negocio reales:
+
+    COMPATIBILIDAD DE LOTE:
+      - Misma TELA.CUERPO + mismo TONO (obligatorio)
+      - Anchos distintos = union de {ANCHO.F.C, ANCHO.F.M} excluyendo 0
+        debe respetar CTDMAXANCHOS, MIN_ANCHO, MAX_ANCHO
+      - LNKs distintos <= MAX_ITEMS (mismo LNK repetido cuenta como 1)
+      - Mezcla de prioridades según tabla COMBINACIONES_PRIORIDAD
+
+    SPLIT: un LNK puede dividirse — se toma min(LBS_RESTANTE, espacio)
+    SPLIT_MIN: no dejar remanente < 500 lbs (o tomarlo todo)
+
+    ORDEN: PAST DUE → DUE → AHEAD → AHEAD2 dentro de cada grupo TELA+TONO+MIX
     """
-    import math
-    min_lbs    = to_int(cap['MINIMO'])
-    max_lbs    = to_int(cap['MAXIMO'])
-    mix_tipo   = str(cap['MIX']).upper()
-    tipo_tej   = str(cap['TIPO_TEJIDO']).upper()
-    max_anchos = to_int(cap['CTDMAXANCHOS'], 3)
-    max_lotes  = round(to_int(cap.get('LOTES', 9999)) * DIAS_SEMANA * to_float(cap.get('SEMANAS', 4)))
-    SPLIT_MIN  = 500.0
+    min_lbs        = to_int(cap['MINIMO'])
+    max_lbs        = to_int(cap['MAXIMO'])
+    mix_tipo       = str(cap['MIX']).upper()
+    tipo_tej       = str(cap['TIPO_TEJIDO']).upper()
+    max_anchos     = to_int(cap['CTDMAXANCHOS'], 3)
+    min_ancho_val  = to_float(cap.get('MIN_ANCHO', 0))
+    max_ancho_val  = to_float(cap.get('MAX_ANCHO', 999))
+    max_lotes      = round(to_int(cap.get('LOTES', 9999)) * DIAS_SEMANA * to_float(cap.get('SEMANAS', 4)))
+    SPLIT_MIN      = 500.0
 
     if lbs_restantes_global is None:
         lbs_restantes_global = {}
+
+    # Orden de prioridades
+    PRIO_ORDER = {'PAST DUE': 0, 'PASTVENCIDOS': 0, 'VENCIDOS': 0,
+                  'DUE': 1, 'AHEAD': 2, 'AHEAD2': 3, 'OTROS': 4}
+
+    # Mezclas permitidas desde tabla COMBINACIONES_PRIORIDAD
+    # combos_prioridad = [['VENCIDOS','AHEAD'], ['AHEAD','AHEAD2'], ...]
+    # Construir set de pares permitidos (bidireccional)
+    allowed_pairs = set()
+    if combos_prioridad:
+        for pair in combos_prioridad:
+            if len(pair) >= 2:
+                a, b = str(pair[0]).upper().strip(), str(pair[1]).upper().strip()
+                allowed_pairs.add((a, b))
+                allowed_pairs.add((b, a))
+                allowed_pairs.add((a, a))
+                allowed_pairs.add((b, b))
+    # Siempre permitir mismo bloque con mismo bloque
+    for p in PRIO_ORDER:
+        allowed_pairs.add((p, p))
+
+    def can_mix_priorities(existing_prios, new_prio):
+        """¿Puede new_prio entrar al lote con las prioridades existentes?"""
+        np = str(new_prio).upper().strip()
+        for ep in existing_prios:
+            ep = str(ep).upper().strip()
+            if ep == np:
+                continue
+            if (ep, np) not in allowed_pairs:
+                return False
+        return True
 
     # ── Filtros de categoría ──────────────────────────────────────────────────
     gc = df_cat[df_cat['MIX'].str.upper() == mix_tipo].copy()
@@ -348,30 +388,54 @@ def run_loteador(df_cat, cap, max_items, solver_timeout, lbs_restantes_global=No
     else:
         gc['LBS_EFECTIVA'] = gc['LBS_C']
 
-    # Inicializar lbs_restantes_global para filas nuevas
+    # Inicializar lbs_restantes_global
     for orig_idx, row in gc.iterrows():
         if orig_idx not in lbs_restantes_global:
             lbs_restantes_global[orig_idx] = float(row['LBS_EFECTIVA'])
 
-    gc['ANCHOS_SET'] = gc['ANCHO'].apply(lambda x: {str(x)})
+    def get_anchos(row):
+        """Anchos reales de una fila: union {ANCHO.F.C, ANCHO.F.M} sin ceros."""
+        anchos = set()
+        for col in ['ANCHO', 'ANCHO.F.M']:
+            if col in row.index:
+                v = row[col]
+                try:
+                    fv = float(v)
+                    if fv > 0:
+                        anchos.add(round(fv, 4))
+                except:
+                    pass
+        return anchos
+
+    def anchos_validos(anchos_set):
+        """¿Los anchos del lote cumplen MIN, MAX y cantidad?"""
+        if not anchos_set:
+            return True
+        vals = [float(a) for a in anchos_set]
+        if min(vals) < min_ancho_val and min_ancho_val > 0:
+            return False
+        if max(vals) > max_ancho_val and max_ancho_val < 999:
+            return False
+        if len(anchos_set) > max_anchos:
+            return False
+        return True
 
     def choose_take(rest, remaining):
-        """Exactamente cuántas lbs tomar — igual que Colab choose_take."""
         if rest <= 0 or remaining <= 0:
             return 0.0
         take = min(rest, remaining)
-        # No partir si el remanente quedaría entre 0 y SPLIT_MIN
         residuo = rest - take
         if 0 < residuo < SPLIT_MIN:
-            # ¿Puedo tomar menos y dejar el remanente >= SPLIT_MIN?
             take_alt = rest - SPLIT_MIN
             if take_alt >= SPLIT_MIN and take_alt <= remaining:
                 return round(take_alt, 1)
-            # Si no, scrap del remanente (tomar todo)
-            return round(take, 1)
+            return round(take, 1)   # scrap del remanente
         return round(take, 1)
 
-    # ── Agrupar por TONO+TELA+MIX (igual que Colab) ──────────────────────────
+    def prio_rank(p):
+        return PRIO_ORDER.get(str(p).upper().strip(), 3)
+
+    # ── Agrupar por TELA.CUERPO (ESTILO_C) + TONO + MIX ────────────────────
     group_keys = ['ESTILO_C', 'MIX']
     if 'TONO' in gc.columns:
         group_keys = ['ESTILO_C', 'TONO', 'MIX']
@@ -379,93 +443,116 @@ def run_loteador(df_cat, cap, max_items, solver_timeout, lbs_restantes_global=No
     lotes = []
     lid   = 1
 
-    for group_keys_vals, grp_idx in gc.groupby(group_keys).groups.items():
+    for gk, grp_idx in gc.groupby(group_keys).groups.items():
         if len(lotes) >= max_lotes:
             break
 
         work = gc.loc[grp_idx].copy()
 
+        # Precomputar anchos por fila
+        work['_anchos'] = work.apply(get_anchos, axis=1)
+        work['_prio_rank'] = work['PRIORIDAD'].apply(prio_rank) if 'PRIORIDAD' in work.columns else 3
+
         while True:
             if len(lotes) >= max_lotes:
                 break
 
-            # Filas con remanente > 0 en este grupo
+            # Actualizar remanentes
             work['_rest'] = work.index.map(lambda i: lbs_restantes_global.get(i, 0.0))
-            disponibles   = work[work['_rest'] > 0]
+            disponibles   = work[work['_rest'] > 0].sort_values(['_prio_rank', '_rest'],
+                                                                  ascending=[True, False])
             if disponibles.empty:
                 break
 
-            # Seed: ítem con más lbs disponibles (igual que Colab: sort desc)
-            seed_idx = disponibles['_rest'].idxmax()
-            seed_rest = lbs_restantes_global[seed_idx]
-            seed_ancho = str(gc.loc[seed_idx, 'ANCHO'])
+            # Seed: mejor prioridad + más lbs
+            seed_idx   = disponibles.index[0]
+            seed_rest  = lbs_restantes_global[seed_idx]
+            seed_prio  = str(work.loc[seed_idx, 'PRIORIDAD']).upper().strip() if 'PRIORIDAD' in work.columns else 'AHEAD'
+            seed_anchos= work.loc[seed_idx, '_anchos']
 
-            # Iniciar lote con el seed
-            lote_rows   = []
-            lote_lbs    = 0.0
-            anchos_lote = {seed_ancho}
-
-            # ¿Cuánto tomar del seed?
             take_seed = choose_take(seed_rest, max_lbs)
-            if take_seed < SPLIT_MIN:
-                # No vale la pena — no puede formar ni un fragmento mínimo
-                # Marcarlo como agotado para este grupo
+            if take_seed < SPLIT_MIN and take_seed < seed_rest:
+                lbs_restantes_global[seed_idx] = 0.0  # descarte, muy pequeño
+                continue
+            if take_seed <= 0:
                 lbs_restantes_global[seed_idx] = 0.0
                 continue
 
-            lote_rows.append((seed_idx, take_seed))
-            lote_lbs += take_seed
+            # Verificar que anchos del seed son válidos para esta categoría
+            anchos_lote = set(seed_anchos)
+            if not anchos_validos(anchos_lote):
+                lbs_restantes_global[seed_idx] = 0.0
+                continue
 
-            # Greedy fill: agregar ítems hasta llenar max_lbs
+            lote_rows    = [(seed_idx, take_seed)]
+            lote_lbs     = take_seed
+            lote_prios   = {seed_prio}
+            lote_lnks    = set()
+            # LNK del seed
+            if 'LNK' in work.columns:
+                lote_lnks.add(str(work.loc[seed_idx, 'LNK']))
+
+            # Greedy fill con resto de disponibles
             for fill_idx in disponibles.index:
                 if fill_idx == seed_idx:
                     continue
-                if len(lote_rows) >= max_items:
-                    break
                 if lote_lbs >= max_lbs:
                     break
 
-                fill_rest  = lbs_restantes_global.get(fill_idx, 0.0)
+                fill_rest = lbs_restantes_global.get(fill_idx, 0.0)
                 if fill_rest <= 0:
                     continue
 
-                fill_ancho = str(gc.loc[fill_idx, 'ANCHO'])
-                anchos_new = anchos_lote | {fill_ancho}
-                if len(anchos_new) > max_anchos:
+                # Chequeo de LNKs distintos
+                fill_lnk = str(work.loc[fill_idx, 'LNK']) if 'LNK' in work.columns else str(fill_idx)
+                lnks_new = lote_lnks | {fill_lnk}
+                if len(lnks_new) > max_items:
+                    continue
+
+                # Chequeo de prioridad
+                fill_prio = str(work.loc[fill_idx, 'PRIORIDAD']).upper().strip() if 'PRIORIDAD' in work.columns else 'AHEAD'
+                if not can_mix_priorities(lote_prios, fill_prio):
+                    continue
+
+                # Chequeo de anchos
+                fill_anchos = work.loc[fill_idx, '_anchos']
+                anchos_new  = anchos_lote | fill_anchos
+                if not anchos_validos(anchos_new):
                     continue
 
                 remaining = max_lbs - lote_lbs
                 take_fill = choose_take(fill_rest, remaining)
-                if take_fill < SPLIT_MIN and take_fill < fill_rest:
-                    # Fragmento demasiado pequeño y no es el total del ítem
-                    continue
                 if take_fill <= 0:
+                    continue
+                if take_fill < SPLIT_MIN and take_fill < fill_rest:
                     continue
 
                 lote_rows.append((fill_idx, take_fill))
-                lote_lbs  += take_fill
+                lote_lbs   += take_fill
                 anchos_lote = anchos_new
+                lote_prios.add(fill_prio)
+                lote_lnks   = lnks_new
 
-            # ¿El lote cumple el mínimo?
+            # Validar mínimo
             if lote_lbs < min_lbs:
-                # No alcanza — scrap del seed para no quedar bloqueado
                 lbs_restantes_global[seed_idx] = 0.0
                 continue
 
-            # Registrar lote y descontar remanentes
+            # Descontar remanentes
             lote_lbs = round(lote_lbs, 1)
             for row_idx, row_take in lote_rows:
                 lbs_restantes_global[row_idx] = round(
                     max(0.0, lbs_restantes_global[row_idx] - row_take), 1)
 
-            ordenados  = sorted(anchos_lote, key=lambda a: float(a), reverse=True)
-            set_anchos = '-'.join(ordenados)
-            cant       = len(anchos_lote)
-            tipo_lote  = 'PURO' if cant == 1 else ('MIX_CONTROLADO' if cant <= 3 else 'MIX_ALTO')
+            # Anchos formateados
+            anchos_sorted = sorted(anchos_lote, key=lambda a: float(a), reverse=True)
+            set_anchos    = '-'.join(str(round(a, 2)) for a in anchos_sorted)
+            cant          = len(anchos_lote)
+            tipo_lote     = 'PURO' if cant == 1 else ('MIX_CONTROLADO' if cant <= 3 else 'MIX_ALTO')
 
             lotes.append({
                 'lid':        lid,
-                'rows':       lote_rows,      # [(orig_idx, lbs_tomadas), ...]
+                'rows':       lote_rows,
                 'total':      lote_lbs,
                 'set_anchos': set_anchos,
                 'cant':       cant,
@@ -474,6 +561,7 @@ def run_loteador(df_cat, cap, max_items, solver_timeout, lbs_restantes_global=No
             lid += 1
 
     return lotes, gc
+
 
 
 
@@ -885,14 +973,7 @@ def _aplicar_restricciones(df, cap, rest_ancho, rest_color, rest_familia):
 def run_all(df, capacidades, config, rest_ancho=None, rest_color=None, rest_familia=None):
     max_items      = to_int(config.get('MAX_ITEMS', 8))
     solver_timeout = to_float(config.get('SOLVER_TIMEOUT', 5))
-    # Ordenar de MENOR a MAYOR MAXIMO — las categorías pequeñas procesan primero
-    # Esto evita que A-4000 consuma via split toda la data antes de que
-    # E-1100 o D-2200 puedan formar sus lotes.
-    # Si el usuario quiere orden diferente, puede reordenar en la UI.
-    active_caps = sorted(
-        [c for c in capacidades if c.get('ACTIVO', True)],
-        key=lambda c: (to_int(c.get('MAXIMO', 9999)), str(c.get('MIX',''))),
-    )
+    active_caps = [c for c in capacidades if c.get('ACTIVO', True)]
 
     all_rows              = []
     lbs_restantes_global  = {}  # {orig_idx -> lbs_aun_disponibles} — clave del control de excesos
@@ -912,9 +993,12 @@ def run_all(df, capacidades, config, rest_ancho=None, rest_color=None, rest_fami
             rest_color   or [],
             rest_familia or [],
         )
+        combos = config.get('COMBINACION_PRIORIDAD',
+                            [['VENCIDOS','AHEAD'],['AHEAD','AHEAD2'],['AHEAD2','OTROS']])
         lotes, grupo = run_loteador(
             df_disponible, cap, max_items, solver_timeout,
             lbs_restantes_global=lbs_restantes_global,
+            combos_prioridad=combos,
         )
 
         for lote in lotes:
