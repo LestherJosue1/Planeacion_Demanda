@@ -68,6 +68,8 @@ class Categoria:
     lotes_dia:    int = 5
     semanas:      float = 4.0
     ctd_max_anchos: int = 3
+    min_ancho_val: float = 0.0  # valor mínimo de ancho en pulgadas (0 = sin límite)
+    max_ancho_val: float = 0.0  # valor máximo de ancho en pulgadas (0 = sin límite)
     activo:       bool = True
 
     @property
@@ -88,6 +90,8 @@ class Categoria:
             "LOTES":         self.lotes_dia,
             "SEMANAS":       self.semanas,
             "CTDMAXANCHOS":  self.ctd_max_anchos,
+            "MIN_ANCHO_VAL": self.min_ancho_val,
+            "MAX_ANCHO_VAL": self.max_ancho_val,
             "ACTIVO":        self.activo,
             "CAPACIDAD_LBS": self.capacidad_lbs,
         }
@@ -103,6 +107,8 @@ class Categoria:
             lotes_dia      = int(d.get("LOTES", 5)),
             semanas        = float(d.get("SEMANAS", 4.0)),
             ctd_max_anchos = int(d.get("CTDMAXANCHOS", 3)),
+            min_ancho_val  = float(d.get("MIN_ANCHO_VAL", 0.0)),
+            max_ancho_val  = float(d.get("MAX_ANCHO_VAL", 0.0)),
             activo         = bool(d.get("ACTIVO", True)),
         )
 
@@ -150,6 +156,10 @@ class Configuracion:
     max_items:       int   = 8
     solver_timeout:  float = 5.0
     beam_width:      int   = 3      # cuántos seeds probar por bloque
+
+    # Diferencia de anchos dentro de un lote
+    min_diff: float = 0.0   # diferencia mínima entre anchos distintos (0 = sin límite)
+    max_diff: float = 6.0   # diferencia máxima entre anchos distintos en pulgadas
 
     # Split
     split_min_default: float = 100.0   # Colab default
@@ -218,6 +228,8 @@ class Configuracion:
             max_items               = _int("MAX_ITEMS", 8),
             solver_timeout          = _float("SOLVER_TIMEOUT", 5.0),
             beam_width              = _int("BEAM_WIDTH", 3),
+            min_diff                = _float("MIN_DIFF", 0.0),
+            max_diff                = _float("MAX_DIFF", 6.0),
             split_min_default       = _float("SPLIT_MIN_LBS_DEFAULT", 100.0),
             split_min_ancho18       = _float("SPLIT_MIN_LBS_ANCHO18", 250.0),
             scrap_remainder         = _bool("SCRAP_REMAINDER_BELOW_SPLIT_MIN", True),
@@ -892,6 +904,16 @@ def intentar_lote_para_rango(
     if not anchos_validos(seed_anchos, max_anchos):
         return None
 
+    # Chequeo de valor de ancho del seed vs límites de la categoría (en pulgadas)
+    min_ancho_cat = float(rango.get("MIN_ANCHO_VAL", 0.0))
+    max_ancho_cat = float(rango.get("MAX_ANCHO_VAL", 0.0))
+    if seed_anchos and min_ancho_cat > 0:
+        if min(seed_anchos) < min_ancho_cat:
+            return None
+    if seed_anchos and max_ancho_cat > 0:
+        if max(seed_anchos) > max_ancho_cat:
+            return None
+
     # max_unique_widths si hay objetivo de anchos estricto
     if max_unique_widths is not None and len(seed_anchos) > max_unique_widths:
         return None
@@ -945,12 +967,17 @@ def intentar_lote_para_rango(
         if not can_mix(prios_lote, fill_prio, allowed_pairs):
             continue
 
-        # Anchos
+        # Anchos: cantidad y diferencia entre valores
         fill_anchos = get_row_widths(work.loc[fill_idx])
         anchos_new  = anchos_lote | fill_anchos
         if not anchos_validos(anchos_new, max_anchos):
             continue
         if max_unique_widths is not None and len(anchos_new) > max_unique_widths:
+            continue
+        # Validar diferencia mínima/máxima entre anchos del lote
+        _min_d = cfg.min_diff if cfg.min_diff > 0 else 0.0
+        _max_d = cfg.max_diff if cfg.max_diff > 0 else 9999.0
+        if len(anchos_new) > 1 and not valid_width_group(list(anchos_new), _min_d, _max_d, max_anchos):
             continue
 
         remaining = max_take - lote_lbs
@@ -1028,6 +1055,8 @@ def _build_ranges(categorias: List[Categoria]) -> List[dict]:
             "MIX":           c.mix.upper(),
             "TIPO_TEJIDO":   c.tipo_tejido.upper(),
             "CTDMAXANCHOS":  c.ctd_max_anchos,
+            "MIN_ANCHO_VAL": c.min_ancho_val,
+            "MAX_ANCHO_VAL": c.max_ancho_val,
             "RANGO_ID":      c.rango_id,
         })
     return sorted(ranges, key=lambda r: -float(r["MAXIMO"]))
@@ -1460,13 +1489,13 @@ PROFILES_FILE = "elcatex_nv3_profiles.json"
 # ── Defaults ──────────────────────────────────────────────────────────────────
 
 DEFAULT_CATEGORIAS = [
-    Categoria("A-4000", 3900, 4000, "DYE",    "FLEECE", lotes_dia=5,  semanas=5.0, ctd_max_anchos=4),
-    Categoria("B-3300", 3000, 3300, "DYE",    "TODOS",  lotes_dia=6,  semanas=5.0, ctd_max_anchos=4),
-    Categoria("C-2600", 2500, 2600, "DYE",    "TODOS",  lotes_dia=29, semanas=5.0, ctd_max_anchos=3),
-    Categoria("D-2200", 2000, 2200, "DYE",    "TODOS",  lotes_dia=17, semanas=2.0, ctd_max_anchos=3),
-    Categoria("E-1100", 1000, 1100, "DYE",    "TODOS",  lotes_dia=25, semanas=1.0, ctd_max_anchos=2),
-    Categoria("F-2200", 2000, 2200, "BLEACH", "TODOS",  lotes_dia=21, semanas=5.0, ctd_max_anchos=3),
-    Categoria("G-1100", 1000, 1100, "BLEACH", "TODOS",  lotes_dia=4,  semanas=1.0, ctd_max_anchos=2),
+    Categoria("A-4000", 3900, 4000, "DYE",    "FLEECE", lotes_dia=5,  semanas=4.0, ctd_max_anchos=4),
+    Categoria("B-3300", 3000, 3300, "DYE",    "TODOS",  lotes_dia=6,  semanas=4.0, ctd_max_anchos=4),
+    Categoria("C-2600", 2500, 2600, "DYE",    "TODOS",  lotes_dia=29, semanas=4.0, ctd_max_anchos=3),
+    Categoria("D-2200", 2000, 2200, "DYE",    "TODOS",  lotes_dia=17, semanas=4.0, ctd_max_anchos=3),
+    Categoria("E-1100", 1000, 1100, "DYE",    "TODOS",  lotes_dia=25, semanas=4.0, ctd_max_anchos=2),
+    Categoria("F-2200", 2000, 2200, "BLEACH", "TODOS",  lotes_dia=21, semanas=4.0, ctd_max_anchos=3),
+    Categoria("G-1100", 1000, 1100, "BLEACH", "TODOS",  lotes_dia=4,  semanas=4.0, ctd_max_anchos=2),
 ]
 
 DEFAULT_REGLAS_ANCHO = [
@@ -1991,34 +2020,36 @@ def tab_capacidades():
     tipo_opts   = ["TODOS", "FLEECE", "JERSEY"]
     mix_opts    = ["DYE", "BLEACH"]
 
-    hcols = st.columns([0.35, 1.0, 0.7, 0.7, 0.6, 0.6, 0.9, 0.7, 0.85, 0.85])
-    for col, lbl in zip(hcols, ["","Categoría","Mín","Máx","Lotes","Semanas","Cap LBS","Anchos Máx","MIX","Tipo Tejido"]):
+    hcols = st.columns([0.3, 0.9, 0.6, 0.6, 0.5, 0.5, 0.8, 0.55, 0.55, 0.55, 0.7, 0.75])
+    for col, lbl in zip(hcols, ["","Categoria","Min lbs","Max lbs","Lotes","Semanas","Cap LBS","Ctd Anchos","MinAncho","MaxAncho","MIX","Tipo Tejido"]):
         col.markdown(f"<div class='col-hdr'>{lbl}</div>", unsafe_allow_html=True)
 
     updated   = []
     total_cap = 0
 
     for i, c in enumerate(cats):
-        cols = st.columns([0.35, 1.0, 0.7, 0.7, 0.6, 0.6, 0.9, 0.7, 0.85, 0.85])
-        activo  = cols[0].checkbox("", value=c.activo,       key=f"ca_{i}")
-        nombre  = cols[1].text_input("",  value=c.nombre,    key=f"cn_{i}", label_visibility="collapsed")
-        minv    = cols[2].number_input("", value=int(c.minimo),  key=f"cmin_{i}", step=100, min_value=0, label_visibility="collapsed")
-        maxv    = cols[3].number_input("", value=int(c.maximo),  key=f"cmax_{i}", step=100, min_value=1, label_visibility="collapsed")
-        lotes   = cols[4].number_input("", value=c.lotes_dia,   key=f"cl_{i}",  step=1,   min_value=1, label_visibility="collapsed")
-        sem_v   = round(float(c.semanas), 1)
-        semanas = cols[5].number_input("", value=sem_v, key=f"cs_{i}", step=0.1, min_value=0.1, format="%.1f", label_visibility="collapsed")
-        cap_c   = int(round(lotes * 7 * float(semanas) * maxv))
+        cols = st.columns([0.3, 0.9, 0.6, 0.6, 0.5, 0.5, 0.8, 0.55, 0.55, 0.55, 0.7, 0.75])
+        activo   = cols[0].checkbox("", value=c.activo,        key=f"ca_{i}")
+        nombre   = cols[1].text_input("",  value=c.nombre,     key=f"cn_{i}", label_visibility="collapsed")
+        minv     = cols[2].number_input("", value=int(c.minimo),   key=f"cmin_{i}", step=100, min_value=0, label_visibility="collapsed")
+        maxv     = cols[3].number_input("", value=int(c.maximo),   key=f"cmax_{i}", step=100, min_value=1, label_visibility="collapsed")
+        lotes    = cols[4].number_input("", value=c.lotes_dia,    key=f"cl_{i}",  step=1,   min_value=1, label_visibility="collapsed")
+        sem_v    = round(float(c.semanas), 1)
+        semanas  = cols[5].number_input("", value=sem_v, key=f"cs_{i}", step=0.1, min_value=0.1, format="%.1f", label_visibility="collapsed")
+        cap_c    = int(round(lotes * 7 * float(semanas) * maxv))
         cols[6].markdown(f"<div style='padding-top:6px'><span class='badge-blue'>{cap_c:,}</span></div>", unsafe_allow_html=True)
-        ctd_anch= cols[7].number_input("", value=c.ctd_max_anchos, key=f"cca_{i}", step=1, min_value=1, max_value=10, label_visibility="collapsed")
-        mix_i   = mix_opts.index(c.mix) if c.mix in mix_opts else 0
-        mix_sel = cols[8].selectbox("", mix_opts,  index=mix_i, key=f"cmix_{i}", label_visibility="collapsed")
-        tip_i   = tipo_opts.index(c.tipo_tejido) if c.tipo_tejido in tipo_opts else 0
-        tip_sel = cols[9].selectbox("", tipo_opts, index=tip_i, key=f"ctj_{i}",  label_visibility="collapsed")
+        ctd_anch = cols[7].number_input("", value=c.ctd_max_anchos, key=f"cca_{i}", step=1, min_value=1, max_value=10, label_visibility="collapsed")
+        min_av   = cols[8].number_input("", value=float(c.min_ancho_val), key=f"cmina_{i}", step=0.5, min_value=0.0, format="%.1f", label_visibility="collapsed", help="0 = sin límite")
+        max_av   = cols[9].number_input("", value=float(c.max_ancho_val), key=f"cmaxa_{i}", step=0.5, min_value=0.0, format="%.1f", label_visibility="collapsed", help="0 = sin límite")
+        mix_i    = mix_opts.index(c.mix) if c.mix in mix_opts else 0
+        mix_sel  = cols[10].selectbox("", mix_opts,  index=mix_i, key=f"cmix_{i}", label_visibility="collapsed")
+        tip_i    = tipo_opts.index(c.tipo_tejido) if c.tipo_tejido in tipo_opts else 0
+        tip_sel  = cols[11].selectbox("", tipo_opts, index=tip_i, key=f"ctj_{i}",  label_visibility="collapsed")
 
         updated.append(Categoria(
             nombre=nombre, minimo=minv, maximo=maxv, mix=mix_sel,
             tipo_tejido=tip_sel, lotes_dia=lotes, semanas=semanas,
-            ctd_max_anchos=ctd_anch, activo=activo,
+            ctd_max_anchos=ctd_anch, min_ancho_val=min_av, max_ancho_val=max_av, activo=activo,
         ))
         if activo:
             total_cap += cap_c
@@ -2079,10 +2110,8 @@ def tab_restricciones():
             p3  = c[4].text_input("", value=str(int(r.prioridades[2])) if len(r.prioridades) > 2 else "", key=f"rc_p3_{i}", label_visibility="collapsed", placeholder="—")
             pris = [float(x) for x in [p1, p2, p3] if x.strip().replace(".","",1).isdigit()]
             if not c[-1].button("✕", key=f"rc_del_{i}"):
-                from nv3.models.regla import ReglaColor
                 updated.append(ReglaColor(cr.strip().upper(), pris, act))
         if st.button("➕ Agregar", key="rc_add"):
-            from nv3.models.regla import ReglaColor
             updated.append(ReglaColor("", []))
         st.session_state["reglas_color"] = updated
 
@@ -2104,10 +2133,8 @@ def tab_restricciones():
                 if txt.strip().replace(".", "", 1).isdigit():
                     pts.append(float(txt))
             if not c[-1].button("✕", key=f"rf_del_{i}"):
-                from nv3.models.regla import ReglaFamilia
                 updated.append(ReglaFamilia(fam.strip().upper(), pts, act))
         if st.button("➕ Agregar", key="rf_add"):
-            from nv3.models.regla import ReglaFamilia
             updated.append(ReglaFamilia("", []))
         st.session_state["reglas_familia"] = updated
 
@@ -2147,6 +2174,10 @@ def tab_config():
         split_a18  = st.number_input("SPLIT_MIN_LBS (ANCHO18)",                   value=cfg.split_min_ancho18, min_value=1.0, step=10.0)
         bleach_r   = st.checkbox("Aplicar reglas a BLEACH",                       value=cfg.apply_rules_bleach)
         scrap_rem  = st.checkbox("Scrap de remanentes < SPLIT_MIN",               value=cfg.scrap_remainder)
+        st.markdown("**📏 Diferencia de Anchos en un Lote**")
+        st.caption("Diferencia en pulgadas entre los anchos distintos dentro de un mismo lote")
+        min_diff = st.number_input("MIN_DIFF — diferencia mínima entre anchos (0=sin límite)", value=float(cfg.min_diff), min_value=0.0, max_value=20.0, step=0.5, format="%.1f")
+        max_diff = st.number_input("MAX_DIFF — diferencia máxima entre anchos",               value=float(cfg.max_diff), min_value=0.0, max_value=30.0, step=0.5, format="%.1f")
 
     with c2:
         st.markdown("**📐 Objetivos de Anchos**")
@@ -2180,6 +2211,8 @@ def tab_config():
         split_min_ancho18     = split_a18,
         apply_rules_bleach    = bleach_r,
         scrap_remainder       = scrap_rem,
+        min_diff              = min_diff,
+        max_diff              = max_diff,
         widths_target_order   = wto,
         require_widths_strict = req_strict,
         upgrade_categoria     = upgrade,
