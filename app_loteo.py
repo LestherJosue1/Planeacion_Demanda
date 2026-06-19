@@ -81,7 +81,7 @@ params = st.session_state["params"]
 df_cap = st.session_state["df_cap"]
 
 # ---------------------------- 2. Panel de configuración ----------------------------
-st.header("2. Configuración (editable)")
+st.header("2. Configuración")
 
 col_reset, col_profile_exp, col_profile_imp = st.columns(3)
 with col_reset:
