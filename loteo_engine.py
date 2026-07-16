@@ -656,68 +656,94 @@ def run_loteo(df_data, df_cap, params, progress_cb=None):
                     continue
 
                 beam_w = int(params.get("BEAM_WIDTH", 3))
-                top_seeds = cand.sort_values("LBS_RESTANTES", ascending=False).head(beam_w).index.tolist()
-
+                
+                # --- NUEVA LÓGICA DE BÚSQUEDA DINÁMICA ---
+                all_cand_indices = cand.sort_values("LBS_RESTANTES", ascending=False).index.tolist()
+                
                 best_lote = None
                 best_pack = None
                 best_score = -1e30
 
-                for seed_idx in top_seeds:
-                    ranges_try, rule_info = reorder_ranges_for_seed(ranges_mix, mixv, work, seed_idx, params)
+                current_seed_index = 0
+                max_attempts = min(len(all_cand_indices), beam_w * 3)
 
-                    if rule_info.get("regla_aplicada") == "ANCHO18" and up(mixv) == "DYE":
-                        allowed = set(params.get("ANCHO18_ALLOWED_MAX_DYE", {2200.0, 1100.0}))
-                        if int(params.get("ANCHO18_ALLOW_SPILLOVER_2600", 0)) == 1:
-                            allowed.add(2600.0)
-                        ranges_try = [r for r in ranges_try if float(r["MAXIMO"]) in allowed]
+                while current_seed_index < max_attempts and best_lote is None:
+                    top_seeds = all_cand_indices[current_seed_index : current_seed_index + beam_w]
 
-                    lote = None
-                    prioridad_obj = None
+                    for seed_idx in top_seeds:
+                        ranges_try, rule_info = reorder_ranges_for_seed(ranges_mix, mixv, work, seed_idx, params)
 
-                    order_text = norm_str(params.get("WIDTHS_TARGET_ORDER", "2>3>4"))
-                    targets = [int(x) for x in order_text.split(">") if x.strip().isdigit()]
-                    req_strict = int(params.get("REQUIRE_WIDTHS_STRICT", 1)) == 1
+                        if rule_info.get("regla_aplicada") == "ANCHO18" and up(mixv) == "DYE":
+                            allowed = set(params.get("ANCHO18_ALLOWED_MAX_DYE", {2200.0, 1100.0}))
+                            if int(params.get("ANCHO18_ALLOW_SPILLOVER_2600", 0)) == 1:
+                                allowed.add(2600.0)
+                            ranges_try = [r for r in ranges_try if float(r["MAXIMO"]) in allowed]
 
-                    pri_list = order_priorities(rule_info.get("prioridades", []), params)
-                    use_upgrades = (len(pri_list) > 0 and int(params.get("UPGRADE_CATEGORIA", 0)) == 1)
-                    pri_iter = pri_list if (use_upgrades and int(params.get("TRY_ALL_PRIORITIES", 1)) == 1) else [None]
+                        lote = None
+                        prioridad_obj = None
 
-                    for target in targets:
-                        candidate_ranges_all = filter_ranges_for_width_target(ranges_try, mixv, target, params)
-                        found = False
-                        for pri in pri_iter:
-                            candidate_ranges = candidate_ranges_all
-                            if pri is not None:
-                                candidate_ranges = ranges_matching_priority(pri, candidate_ranges_all, allow_nearest_higher=True)
+                        order_text = norm_str(params.get("WIDTHS_TARGET_ORDER", "2>3>4"))
+                        targets = [int(x) for x in order_text.split(">") if x.strip().isdigit()]
+                        req_strict = int(params.get("REQUIRE_WIDTHS_STRICT", 1)) == 1
 
-                            for r in candidate_ranges:
-                                if capacity_used[r["RANGO_ID"]] >= r["CAPACIDAD"] - 1e-6:
-                                    continue
-                                split_min = params.get("SPLIT_MIN_LBS_ANCHO18", 250) if rule_info.get("regla_aplicada") == "ANCHO18" else float(params.get("SPLIT_MIN_LBS_DEFAULT", 500.0))
-                                intento = intentar_lote_para_rango(
-                                    work, seed_idx, r, capacity_used, params, rule_info,
-                                    require_two_widths=(rule_info.get("regla_aplicada") == "COMBO_ANCHOS"),
-                                    split_min_lbs=split_min,
-                                    min_unique_widths=target,
-                                    max_unique_widths=(target if req_strict else None)
-                                )
-                                if intento is not None:
-                                    lote = intento
-                                    prioridad_obj = float(pri) if pri is not None else None
-                                    found = True
-                                    break
-                            if found:
-                                break
-                        if lote is not None:
-                            break
+                        pri_list = order_priorities(rule_info.get("prioridades", []), params)
+                        use_upgrades = (len(pri_list) > 0 and int(params.get("UPGRADE_CATEGORIA", 0)) == 1)
+                        pri_iter = pri_list if (use_upgrades and int(params.get("TRY_ALL_PRIORITIES", 1)) == 1) else [None]
 
-                    if lote is None:
-                        if use_upgrades:
+                        for target in targets:
+                            candidate_ranges_all = filter_ranges_for_width_target(ranges_try, mixv, target, params)
+                            found = False
                             for pri in pri_iter:
-                                if pri is None:
-                                    continue
-                                candidate_ranges = ranges_matching_priority(pri, ranges_try, allow_nearest_higher=True)
+                                candidate_ranges = candidate_ranges_all
+                                if pri is not None:
+                                    candidate_ranges = ranges_matching_priority(pri, candidate_ranges_all, allow_nearest_higher=True)
+
                                 for r in candidate_ranges:
+                                    if capacity_used[r["RANGO_ID"]] >= r["CAPACIDAD"] - 1e-6:
+                                        continue
+                                    split_min = params.get("SPLIT_MIN_LBS_ANCHO18", 250) if rule_info.get("regla_aplicada") == "ANCHO18" else float(params.get("SPLIT_MIN_LBS_DEFAULT", 500.0))
+                                    intento = intentar_lote_para_rango(
+                                        work, seed_idx, r, capacity_used, params, rule_info,
+                                        require_two_widths=(rule_info.get("regla_aplicada") == "COMBO_ANCHOS"),
+                                        split_min_lbs=split_min,
+                                        min_unique_widths=target,
+                                        max_unique_widths=(target if req_strict else None)
+                                    )
+                                    if intento is not None:
+                                        lote = intento
+                                        prioridad_obj = float(pri) if pri is not None else None
+                                        found = True
+                                        break
+                                if found:
+                                    break
+                            if lote is not None:
+                                break
+
+                        if lote is None:
+                            if use_upgrades:
+                                for pri in pri_iter:
+                                    if pri is None:
+                                        continue
+                                    candidate_ranges = ranges_matching_priority(pri, ranges_try, allow_nearest_higher=True)
+                                    for r in candidate_ranges:
+                                        if capacity_used[r["RANGO_ID"]] >= r["CAPACIDAD"] - 1e-6:
+                                            continue
+                                        split_min = params.get("SPLIT_MIN_LBS_ANCHO18", 250) if rule_info.get("regla_aplicada") == "ANCHO18" else float(params.get("SPLIT_MIN_LBS_DEFAULT", 500.0))
+                                        if rule_info.get("regla_aplicada") == "COMBO_ANCHOS":
+                                            intento = intentar_lote_para_rango(work, seed_idx, r, capacity_used, params, rule_info, require_two_widths=True, split_min_lbs=split_min)
+                                            if intento is None:
+                                                intento = intentar_lote_para_rango(work, seed_idx, r, capacity_used, params, rule_info, require_two_widths=False, split_min_lbs=split_min)
+                                        else:
+                                            intento = intentar_lote_para_rango(work, seed_idx, r, capacity_used, params, rule_info, require_two_widths=False, split_min_lbs=split_min)
+                                        if intento is not None:
+                                            lote = intento
+                                            prioridad_obj = float(pri)
+                                            break
+                                    if lote is not None:
+                                        break
+
+                            if lote is None:
+                                for r in ranges_try:
                                     if capacity_used[r["RANGO_ID"]] >= r["CAPACIDAD"] - 1e-6:
                                         continue
                                     split_min = params.get("SPLIT_MIN_LBS_ANCHO18", 250) if rule_info.get("regla_aplicada") == "ANCHO18" else float(params.get("SPLIT_MIN_LBS_DEFAULT", 500.0))
@@ -729,43 +755,29 @@ def run_loteo(df_data, df_cap, params, progress_cb=None):
                                         intento = intentar_lote_para_rango(work, seed_idx, r, capacity_used, params, rule_info, require_two_widths=False, split_min_lbs=split_min)
                                     if intento is not None:
                                         lote = intento
-                                        prioridad_obj = float(pri)
                                         break
-                                if lote is not None:
-                                    break
 
-                        if lote is None:
-                            for r in ranges_try:
-                                if capacity_used[r["RANGO_ID"]] >= r["CAPACIDAD"] - 1e-6:
-                                    continue
-                                split_min = params.get("SPLIT_MIN_LBS_ANCHO18", 250) if rule_info.get("regla_aplicada") == "ANCHO18" else float(params.get("SPLIT_MIN_LBS_DEFAULT", 500.0))
-                                if rule_info.get("regla_aplicada") == "COMBO_ANCHOS":
-                                    intento = intentar_lote_para_rango(work, seed_idx, r, capacity_used, params, rule_info, require_two_widths=True, split_min_lbs=split_min)
-                                    if intento is None:
-                                        intento = intentar_lote_para_rango(work, seed_idx, r, capacity_used, params, rule_info, require_two_widths=False, split_min_lbs=split_min)
-                                else:
-                                    intento = intentar_lote_para_rango(work, seed_idx, r, capacity_used, params, rule_info, require_two_widths=False, split_min_lbs=split_min)
-                                if intento is not None:
-                                    lote = intento
-                                    break
-
-                    if lote is not None:
-                        resumen_rows = []
-                        for idx, _lbs, *_ in lote["ROWS"]:
-                            resumen_rows.append({
-                                "LNK": work.at[idx, "LNK"],
-                                "ANCHOS_ROW": get_row_widths(work, idx),
-                            })
-                        lote_for_score = {
-                            "MAXIMO": float(lote["MAXIMO"]),
-                            "TOTAL_LOTE": float(lote["TOTAL_LOTE"]),
-                        }
-                        seed_row_dict = work.loc[seed_idx].to_dict()
-                        sc = score_lote(lote_for_score, resumen_rows, params, categoria=lote["CATEGORIA"], seed_row=seed_row_dict)
-                        if sc > best_score:
-                            best_score = sc
-                            best_lote = lote
-                            best_pack = (lote, rule_info, prioridad_obj, best_score)
+                        if lote is not None:
+                            resumen_rows = []
+                            for idx, _lbs, *_ in lote["ROWS"]:
+                                resumen_rows.append({
+                                    "LNK": work.at[idx, "LNK"],
+                                    "ANCHOS_ROW": get_row_widths(work, idx),
+                                })
+                            lote_for_score = {
+                                "MAXIMO": float(lote["MAXIMO"]),
+                                "TOTAL_LOTE": float(lote["TOTAL_LOTE"]),
+                            }
+                            seed_row_dict = work.loc[seed_idx].to_dict()
+                            sc = score_lote(lote_for_score, resumen_rows, params, categoria=lote["CATEGORIA"], seed_row=seed_row_dict)
+                            if sc > best_score:
+                                best_score = sc
+                                best_lote = lote
+                                best_pack = (lote, rule_info, prioridad_obj, best_score)
+                    
+                    # Avanzamos el índice para la siguiente iteración si no encontramos nada
+                    current_seed_index += beam_w
+                # --- FIN NUEVA LÓGICA DE BÚSQUEDA DINÁMICA ---
 
                 if best_lote is None:
                     blocked.add(b)
@@ -921,7 +933,6 @@ def run_loteo(df_data, df_cap, params, progress_cb=None):
     ], columns=["PARAMETRO", "VALOR"])
 
     return df_detalle, df_resumen, exced, df_param_out
-
 # ---------------------------- Reportes adicionales ----------------------------
 def build_reports(df_data, df_cap, df_detalle, df_resumen):
     df_cap_simple = df_cap[["CATEGORIA", "MIX", "MINIMO", "MAXIMO", "CAPACIDAD"]].copy()
