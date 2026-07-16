@@ -111,13 +111,19 @@ def choose_take(rest, remaining, split_min_lbs, allow_scrap_residue=False):
     take = float(remaining)
     if take + 1e-9 < split_min_lbs:
         return 0.0
-    residue = float(rest) - take
-    if residue > 1e-9 and residue + 1e-9 < split_min_lbs:
-        if not allow_scrap_residue:
-            return 0.0
-        return take
-    return take
+    SCRAP_TOLERANCE = 0.25
 
+residue = float(rest) - take
+
+if residue > 1e-9 and residue + 1e-9 < split_min_lbs:
+
+    if residue <= split_min_lbs * SCRAP_TOLERANCE:
+        return take
+
+    if not allow_scrap_residue:
+        return 0.0
+
+return take
 # ---------------------------- Ranges builder ----------------------------
 def build_ranges(df_cap):
     ranges = []
