@@ -376,7 +376,7 @@ def score_lote(lote_dict, resumen_rows, params, categoria=None, seed_row=None):
     W_CAP_LOSS = params.get("W_CAP_LOSS", 3.0)
     W_WIDTH_PREF = params.get("W_WIDTH_PREF", 2.0)
     W_1100_STRICT = params.get("W_1100_WIDTHS_STRICT", 10.0)
-    pref_list = params.get("WIDTH_PREF_LIST", [2, 3, 1, 4, 5, 6])
+    pref_list = params.get("WIDTH_PREF_LIST", [2, 3, 1, 4])
 
     total = float(lote_dict.get("TOTAL_LOTE", 0.0))
     maximo = float(lote_dict.get("MAXIMO", 1.0))
@@ -402,7 +402,7 @@ def score_lote(lote_dict, resumen_rows, params, categoria=None, seed_row=None):
 
     # --- NUEVO: TIPO_TEJIDO (preferencia FLEECE en categorías grandes) ---
     if int(params.get("TIPO_TEJIDO_ENABLE", 0)) == 1 and categoria is not None and seed_row is not None:
-        cats_fleece = set(params.get("TIPO_TEJIDO_CATEGORIAS", ["A-4000", "B-3300"]))
+        cats_fleece = set(params.get("TIPO_TEJIDO_CATEGORIAS", ["B-3300", "A-4000"]))
         if categoria in cats_fleece:
             tejido = up(seed_row.get("TIPO_TEJIDO", ""))
             familia = up(seed_row.get("FAMILIA", ""))
@@ -674,7 +674,7 @@ def run_loteo(df_data, df_cap, params, progress_cb=None):
                     lote = None
                     prioridad_obj = None
 
-                    order_text = norm_str(params.get("WIDTHS_TARGET_ORDER", "2>3>4"))
+                    order_text = norm_str(params.get("WIDTHS_TARGET_ORDER", "2>3>1>4"))
                     targets = [int(x) for x in order_text.split(">") if x.strip().isdigit()]
                     req_strict = int(params.get("REQUIRE_WIDTHS_STRICT", 1)) == 1
 
@@ -907,10 +907,10 @@ def run_loteo(df_data, df_cap, params, progress_cb=None):
         ["BEAM_WIDTH", params.get("BEAM_WIDTH", 10)],
         ["W_FILL", params.get("W_FILL", 5.0)],
         ["W_CAP_LOSS", params.get("W_CAP_LOSS", 3.0)],
-        ["WIDTH_PREF_LIST", ",".join(str(x) for x in params.get("WIDTH_PREF_LIST", [2, 3, 1, 4, 5, 6]))],
+        ["WIDTH_PREF_LIST", ",".join(str(x) for x in params.get("WIDTH_PREF_LIST", [2, 3, 1, 4]))],
         ["W_WIDTH_PREF", params.get("W_WIDTH_PREF", 2.0)],
         ["W_1100_WIDTHS_STRICT", params.get("W_1100_WIDTHS_STRICT", 10.0)],
-        ["WIDTHS_TARGET_ORDER", params.get("WIDTHS_TARGET_ORDER", "2>3>4")],
+        ["WIDTHS_TARGET_ORDER", params.get("WIDTHS_TARGET_ORDER", "2>3>1>4")],
         ["REQUIRE_WIDTHS_STRICT", params.get("REQUIRE_WIDTHS_STRICT", 1)],
         ["ALLOWED_MAXIMO_FOR_3_WIDTHS_DYE", ",".join(str(int(x)) for x in params.get("ALLOWED_MAXIMO_FOR_3_WIDTHS", {}).get("DYE", set()))],
         ["ALLOWED_MAXIMO_FOR_4_WIDTHS_DYE", ",".join(str(int(x)) for x in params.get("ALLOWED_MAXIMO_FOR_4_WIDTHS", {}).get("DYE", set()))],
