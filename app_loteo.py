@@ -233,7 +233,7 @@ with tabs[7]:
 
 # --- TIPO_TEJIDO ---
 with tabs[8]:
-    st.markdown("En categorías grandes (A-4000, B-3300) preferir tejido FLEECE en el scoring, EXCEPTO si la familia tiene RESTRICCION_FAMILIA activa.")
+    st.markdown("En categorías grandes ( B-3300,A-4000) preferir tejido FLEECE en el scoring, EXCEPTO si la familia tiene RESTRICCION_FAMILIA activa.")
     on = st.checkbox("Activar preferencia TIPO_TEJIDO (FLEECE)", value=params["RULE_TOGGLES"]["TIPO_TEJIDO"], key="t_tejido")
     params["RULE_TOGGLES"]["TIPO_TEJIDO"] = on
     params["TIPO_TEJIDO_ENABLE"] = 1 if on else 0
