@@ -209,8 +209,8 @@ def parse_reglas_operativas(xlsm_path):
 
         "WIDTHS_TARGET_ORDER": "2>3>1>4",
         "REQUIRE_WIDTHS_STRICT": 1,
-        "ALLOWED_MAXIMO_FOR_3_WIDTHS": {"DYE": {3300.0,4000.0,2600.0, 2200.0}, "BLEACH": set()},
-        "ALLOWED_MAXIMO_FOR_4_WIDTHS": {"DYE": {3300.0,4000.0,2600.0, 2200.0}, "BLEACH": set()},
+        "ALLOWED_MAXIMO_FOR_3_WIDTHS": {"DYE": {4000.0,3300.0,2600.0, 2200.0}, "BLEACH": set()},
+        "ALLOWED_MAXIMO_FOR_4_WIDTHS": {"DYE": {4000.0,3300.0,2600.0, 2200.0}, "BLEACH": set()},
 
         # TIPO_TEJIDO (nuevo)
         "TIPO_TEJIDO_ENABLE": 1,
