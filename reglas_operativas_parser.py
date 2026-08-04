@@ -200,7 +200,7 @@ def parse_reglas_operativas(xlsm_path):
         "ANCHO18_ALLOW_SPILLOVER_2600": 0,
         "ANCHO18_ALLOWED_MAX_DYE": {2200.0, 1100.0},
 
-        "BEAM_WIDTH": 10,
+        "BEAM_WIDTH": 5,
         "W_FILL": 5.0,
         "W_CAP_LOSS": 3.0,
         "WIDTH_PREF_LIST": [2, 3, 1, 4],
