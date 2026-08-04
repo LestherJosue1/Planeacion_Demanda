@@ -7,6 +7,7 @@
 import re
 import pandas as pd
 import numpy as np
+import streamlit as st  # <--- 1. Importar Streamlit aquí
 
 DEFAULT_MAX_WIDTHS_BY_CAT = {
     "A-4000": 4, "B-3300": 4,
@@ -48,6 +49,7 @@ def _first_number_in_text(text, default=None):
     return default
 
 
+@st.cache_data  # <--- 2. Cachear la lectura del archivo Excel bruto por si acaso
 def find_reglas_operativas_table(xlsm_path):
     """Localiza la fila de encabezado REGLAS/PRODUCTO/CLAVE1.../OBSERVACION
     dentro de la hoja REGLAS_OPERATIVAS (puede no estar en la fila 1)."""
@@ -63,6 +65,7 @@ def find_reglas_operativas_table(xlsm_path):
     return raw, header_row
 
 
+@st.cache_data  # <--- 3. EL PARCHE PRINCIPAL: Cachear la función entera del parser
 def parse_reglas_operativas(xlsm_path):
     """Lee la hoja REGLAS_OPERATIVAS y construye:
       - reglas_raw: lista de dicts (cada fila tal cual, para mostrar como referencia en la UI)
@@ -135,8 +138,6 @@ def parse_reglas_operativas(xlsm_path):
             obs_split_minimo = _first_number_in_text(obs, 500.0)
 
     # ---------- Sub-tabla CAPACIDAD TINTORERIA ----------
-    # En la plantilla real, la fila de encabezado de esta sub-tabla está embebida
-    # (columna PRODUCTO=CATEGORIA, CLAVE1=MINIMO, CLAVE2=MAXIMO, CLAVE3=CAPACIDAD, CLAVE4=MIX)
     cap_data_rows = cap_rows[cap_rows["PRODUCTO"].notna() & (cap_rows["PRODUCTO"].astype(str).str.strip().str.upper() != "CATEGORIA")]
     cap_records = []
     for _, r in cap_data_rows.iterrows():
