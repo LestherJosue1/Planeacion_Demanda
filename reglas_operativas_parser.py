@@ -135,7 +135,7 @@ def parse_reglas_operativas(xlsm_path):
             obs_max_skus = _first_number_in_text(obs, 6.0)
 
         elif tag == "SPLIT_MINIMO":
-            obs_split_minimo = _first_number_in_text(obs, 500.0)
+            obs_split_minimo = _first_number_in_text(obs, 200.0)
 
     # ---------- Sub-tabla CAPACIDAD TINTORERIA ----------
     cap_data_rows = cap_rows[cap_rows["PRODUCTO"].notna() & (cap_rows["PRODUCTO"].astype(str).str.strip().str.upper() != "CATEGORIA")]
@@ -177,8 +177,8 @@ def parse_reglas_operativas(xlsm_path):
         "MAX_WIDTHS_BY_CAT": dict(DEFAULT_MAX_WIDTHS_BY_CAT),
         "MAX_WIDTHS_DEFAULT": 4,
 
-        "SPLIT_MIN_LBS_DEFAULT": obs_split_minimo if obs_split_minimo is not None else 500.0,
-        "SPLIT_MIN_LBS_ANCHO18": 250.0,
+        "SPLIT_MIN_LBS_DEFAULT": obs_split_minimo if obs_split_minimo is not None else 200.0,
+        "SPLIT_MIN_LBS_ANCHO18": 200.0,
         "SCRAP_REMAINDER_BELOW_SPLIT_MIN": 1,
 
         "RESTRICCIONES_FAMILIA": restr_fam,
@@ -200,17 +200,17 @@ def parse_reglas_operativas(xlsm_path):
         "ANCHO18_ALLOW_SPILLOVER_2600": 0,
         "ANCHO18_ALLOWED_MAX_DYE": {2200.0, 1100.0},
 
-        "BEAM_WIDTH": 3,
+        "BEAM_WIDTH": 10,
         "W_FILL": 5.0,
         "W_CAP_LOSS": 3.0,
-        "WIDTH_PREF_LIST": [2, 3, 1, 4, 5, 6],
+        "WIDTH_PREF_LIST": [2, 3, 1, 4],
         "W_WIDTH_PREF": 2.0,
         "W_1100_WIDTHS_STRICT": 10.0,
 
-        "WIDTHS_TARGET_ORDER": "2>3>4",
+        "WIDTHS_TARGET_ORDER": "2>3>1>4",
         "REQUIRE_WIDTHS_STRICT": 1,
-        "ALLOWED_MAXIMO_FOR_3_WIDTHS": {"DYE": {2200.0, 2600.0}, "BLEACH": set()},
-        "ALLOWED_MAXIMO_FOR_4_WIDTHS": {"DYE": {2600.0}, "BLEACH": set()},
+        "ALLOWED_MAXIMO_FOR_3_WIDTHS": {"DYE": {3300.0,4000.0,2600.0, 2200.0}, "BLEACH": set()},
+        "ALLOWED_MAXIMO_FOR_4_WIDTHS": {"DYE": {3300.0,4000.0,2600.0, 2200.0}, "BLEACH": set()},
 
         # TIPO_TEJIDO (nuevo)
         "TIPO_TEJIDO_ENABLE": 1,
