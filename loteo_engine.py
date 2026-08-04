@@ -655,7 +655,7 @@ def run_loteo(df_data, df_cap, params, progress_cb=None):
                     blocked.add(b)
                     continue
 
-                beam_w = int(params.get("BEAM_WIDTH", 10))
+                beam_w = int(params.get("BEAM_WIDTH", 5))
                 top_seeds = cand.sort_values("LBS_RESTANTES", ascending=False).head(beam_w).index.tolist()
 
                 best_lote = None
@@ -904,7 +904,7 @@ def run_loteo(df_data, df_cap, params, progress_cb=None):
         ["ANCHO18_ALLOW_SPILLOVER_2600", params.get("ANCHO18_ALLOW_SPILLOVER_2600", 0)],
         ["ANCHO18_ALLOWED_MAX_DYE", ",".join(sorted(str(int(x)) for x in params.get("ANCHO18_ALLOWED_MAX_DYE", {2200.0, 1100.0})))],
         ["SCRAP_REMAINDER_BELOW_SPLIT_MIN", params.get("SCRAP_REMAINDER_BELOW_SPLIT_MIN", 1)],
-        ["BEAM_WIDTH", params.get("BEAM_WIDTH", 10)],
+        ["BEAM_WIDTH", params.get("BEAM_WIDTH", 5)],
         ["W_FILL", params.get("W_FILL", 5.0)],
         ["W_CAP_LOSS", params.get("W_CAP_LOSS", 3.0)],
         ["WIDTH_PREF_LIST", ",".join(str(x) for x in params.get("WIDTH_PREF_LIST", [2, 3, 1, 4]))],
